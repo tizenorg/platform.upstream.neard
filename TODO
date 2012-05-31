@@ -1,0 +1,89 @@
+Background
+==========
+
+- Priority scale: High, Medium and Low
+
+- Complexity scale: C1, C2, C4 and C8.
+   The complexity scale is exponential, with complexity 1 being the
+   lowest complexity. Complexity is a function of both task 'complexity'
+   and task 'scope'.
+
+Core
+====
+
+- Writer Mode
+
+  Priority: Medium
+  Complexity: C4
+  Dependencies: Core:NDEF building library
+  Owner: Ravi kumar Veeramally <ravikumar.veeramally@linux.intel.com>
+
+  In writer mode, neard allows application to write to an NFC tag, or to push
+  data to a p2p device.
+
+
+- Card Emulation Mode
+
+  Priority: High
+  Complexity: C8
+  Dependencies: Core:NDEF building library
+  Owner: Samuel Ortiz <sameo@linux.intel.com>
+
+  In card emulation mode, the NFC adapter is in passive mode, and gets
+  activated by an initiator mode device. Then the initiator sends command
+  that the target is supposed to interpret and respond to. Most of the
+  commands are tag specific.
+  For a proper card emulation mode support, the NFC adapter must enter the
+  polling loop and not only initiate the RF field, but then wait for intiator
+  to activate it. Once activated, the NFC socket should enter the accept
+  state, and dispatch the various commands to the right plugins (one per
+  protocol, a.k.a. tags).
+
+
+Reader mode
+===========
+
+- MIFARE tag support
+
+  Priority: Medium
+  Complexity: C4
+  Owner: Olivier Guiter <olivier.guiter@linux.intel.com>
+
+- Bluetooth Handover integration
+
+  Priority: Medium
+  Complexity: C4
+  Owner: Olivier Guiter <olivier.guiter@linux.intel.com>
+
+  The handover integration has to be done between bluetoothd, obexd and
+  neard. obexd should be able to expose and OOB NDEF in order for an NFC
+  peer to initiate a BT pairing. The potentially queued OBEX transfers
+  should then start once the pairing is done.
+  On the other hand, neard should be able to talk with bluetoothd for
+  pairing with a remote peer exporting an OOB NDEF. Once the pairing is
+  done, obexd should be able to handle the OBEX transfer.
+
+
+p2p mode
+========
+
+- NPP client support
+
+  Priority: Low
+  Conplexity: C2
+  Dependencies: Core:Writer mode
+  Owner: Samuel Ortiz <sameo@linux.intel.com>
+
+  For pushing NDEFs through NPP over LLCP, neard has to behave
+  as an NPP client.
+
+- SNEP support
+
+  Priority: High
+  Conplexity: C4
+  Dependencies: Core:Writer mode
+  Owner: Samuel Ortiz <sameo@linux.intel.com>
+
+  SNEP is the NFC Forum defined standard for exchanging NDEFs over
+  an LLCP link. SNEP can be run as a client or a server, respectively
+  to send and receive NDEFs.
