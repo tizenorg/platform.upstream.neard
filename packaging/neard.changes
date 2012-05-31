@@ -1,0 +1,9 @@
+* Tue Apr 24 2012 Arron <arron.wang@intel.com> - 0.2.26
+- Upgrade to latest version
+
+* Fri Apr 20 2012 Arron <arron.wang@intel.com> - 0.1.64
+- Add building require for kernel-adaptation-bb-devel to fix the building error
+
+* Fri Mar 30 2012 Arron <arron.wang@intel.com> - 0.1.64
+- Init package for neard
+

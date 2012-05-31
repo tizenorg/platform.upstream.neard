@@ -1,0 +1,4 @@
+#!/bin/sh
+
+modprobe pn544_hci
+/usr/libexec/neard
