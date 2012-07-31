@@ -1,3 +1,31 @@
+ver 0.5:
+	Added Handover Initiator support.
+	Added Handover selector support.
+	Added support for Type 2 tags formatting.
+	Added early binding support.
+	Fixed handover and p2p memory leaks.
+	Fixed Type 2 tag read command.
+	Fixed NDEF push return value.
+	Removed plugins enablement configure options.
+
+ver 0.4:
+	Added target mode support for peer to peer.
+	Added a handover agent API.
+	Fixed SNEP read fragmentation.
+	Fixed SNEP response frames version field.
+	Fixed build dependencies.
+	Fixed netlink and adapter memory leaks.
+
+ver 0.3:
+	Added a Tag D-Bus API.
+	Added an SNEP testing tool.
+	Added SNEP fragmentation support.
+	Added BlueZ signal handlers for adapter tracking.
+	Added BlueZ adapter properties handling.
+	Added a main.conf template.
+	Removed the Target D-Bus API.
+	Fixed Type 1 commands handling.
+
 ver 0.2:
 	Added SNEP support.
 	Added tag presence check implementation.

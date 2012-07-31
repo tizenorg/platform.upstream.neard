@@ -57,6 +57,7 @@ struct near_tag {
 
 	uint32_t n_records;
 	GList *records;
+	near_bool_t blank;
 
 	/* Tag specific structures */
 	struct {
@@ -68,6 +69,8 @@ struct near_tag {
 		uint16_t max_ndef_size;
 		uint16_t c_apdu_max_size;
 	} t4;
+
+	DBusMessage *write_msg; /* Pending write message */
 };
 
 static DBusConnection *connection = NULL;
@@ -225,7 +228,28 @@ static DBusMessage *set_property(DBusConnection *conn,
 
 static void write_cb(uint32_t adapter_idx, uint32_t target_idx, int status)
 {
+	struct near_tag *tag;
+	DBusConnection *conn;
+	DBusMessage *reply;
+
 	DBG("Write status %d", status);
+
+	conn = near_dbus_get_connection();
+	tag = near_tag_get_tag(adapter_idx, target_idx);
+
+	if (conn == NULL || tag == NULL)
+		return;
+
+	if (status != 0) {
+		reply = __near_error_failed(tag->write_msg, EINVAL);
+		if (reply != NULL)
+			g_dbus_send_message(conn, reply);
+	} else {
+		g_dbus_send_reply(conn, tag->write_msg, DBUS_TYPE_INVALID);
+	}
+
+	dbus_message_unref(tag->write_msg);
+	tag->write_msg = NULL;
 }
 
 static DBusMessage *write_ndef(DBusConnection *conn,
@@ -237,9 +261,19 @@ static DBusMessage *write_ndef(DBusConnection *conn,
 
 	DBG("conn %p", conn);
 
+	if (tag->readonly == TRUE) {
+		DBG("Read only tag");
+		return __near_error_permission_denied(msg);
+	}
+
+	if (tag->write_msg)
+		return __near_error_in_progress(msg);
+
 	ndef = __ndef_build_from_message(msg);
 	if (ndef == NULL)
 		return __near_error_failed(msg, EINVAL);
+
+	tag->write_msg = dbus_message_ref(msg);
 
 	/* Add NDEF header information depends upon tag type */
 	switch (tag->type) {
@@ -319,18 +353,27 @@ static DBusMessage *write_ndef(DBusConnection *conn,
 	return g_dbus_create_reply(msg, DBUS_TYPE_INVALID);
 
 fail:
+	dbus_message_unref(tag->write_msg);
+	tag->write_msg = NULL;
+
 	return __near_error_failed(msg, ENOMEM);
 }
 
-static GDBusMethodTable tag_methods[] = {
-	{ "GetProperties",     "",      "a{sv}", get_properties     },
-	{ "SetProperty",       "sv",    "",      set_property       },
-	{ "Write",             "a{sv}", "",      write_ndef         },
+static const GDBusMethodTable tag_methods[] = {
+	{ GDBUS_METHOD("GetProperties",
+				NULL, GDBUS_ARGS({"properties", "a{sv}"}),
+				get_properties) },
+	{ GDBUS_METHOD("SetProperty",
+				GDBUS_ARGS({"name", "s"}, {"value", "v"}),
+				NULL, set_property) },
+	{ GDBUS_ASYNC_METHOD("Write", GDBUS_ARGS({"attributes", "a{sv}"}),
+							NULL, write_ndef) },
 	{ },
 };
 
-static GDBusSignalTable tag_signals[] = {
-	{ "PropertyChanged",		"sv"	},
+static const GDBusSignalTable tag_signals[] = {
+	{ GDBUS_SIGNAL("PropertyChanged",
+				GDBUS_ARGS({"name", "s"}, {"value", "v"})) },
 	{ }
 };
 
@@ -461,7 +504,7 @@ static int tag_initialize(struct near_tag *tag,
 	tag->target_idx = target_idx;
 	tag->protocol = protocols;
 	tag->n_records = 0;
-	tag->readonly = 0;
+	tag->readonly = FALSE;
 
 	if (nfcid_len <= NFC_MAX_NFCID1_LEN) {
 		tag->nfcid_len = nfcid_len;
@@ -583,6 +626,29 @@ fail:
 	return NULL;
 }
 
+int near_tag_set_nfcid(uint32_t adapter_idx, uint32_t target_idx,
+					uint8_t *nfcid, size_t nfcid_len)
+{
+	struct near_tag *tag;
+
+	DBG("NFCID len %zd", nfcid_len);
+
+	tag = near_tag_get_tag(adapter_idx, target_idx);
+	if (tag == NULL)
+		return -ENODEV;
+
+	if (tag->nfcid_len > 0)
+		return -EALREADY;
+
+	if (nfcid_len > NFC_MAX_NFCID1_LEN)
+		return -EINVAL;
+
+	memcpy(tag->nfcid, nfcid, nfcid_len);
+	tag->nfcid_len = nfcid_len;
+
+	return 0;
+}
+
 int near_tag_add_data(uint32_t adapter_idx, uint32_t target_idx,
 			uint8_t *data, size_t data_length)
 {
@@ -636,16 +702,14 @@ int near_tag_add_records(struct near_tag *tag, GList *records,
 	return 0;
 }
 
-int near_tag_set_ro(struct near_tag *tag, near_bool_t readonly)
+void near_tag_set_ro(struct near_tag *tag, near_bool_t readonly)
 {
 	tag->readonly = readonly;
-
-	return 0;
 }
 
-near_bool_t near_tag_get_ro(struct near_tag *tag)
+void near_tag_set_blank(struct near_tag *tag, near_bool_t blank)
 {
-	return tag->readonly;
+	tag->blank = blank;
 }
 
 uint8_t *near_tag_get_data(struct near_tag *tag, size_t *data_length)
@@ -804,6 +868,7 @@ int __near_tag_write(struct near_tag *tag,
 				near_tag_io_cb cb)
 {
 	GSList *list;
+	int err;
 
 	DBG("type 0x%x", tag->type);
 
@@ -812,9 +877,20 @@ int __near_tag_write(struct near_tag *tag,
 
 		DBG("driver type 0x%x", driver->type);
 
-		if (driver->type == tag->type)
+		if (driver->type == tag->type) {
+			if (tag->blank == TRUE && driver->format != NULL) {
+				DBG("Blank tag detected, formatting");
+				err = driver->format(tag->adapter_idx,
+						tag->target_idx, NULL);
+
+				if (err < 0)
+					return err;
+
+			}
+
 			return driver->write(tag->adapter_idx, tag->target_idx,
 								ndef, cb);
+		}
 	}
 
 	return 0;
@@ -845,24 +921,14 @@ int __near_tag_check_presence(struct near_tag *tag, near_tag_io_cb cb)
 static void free_tag(gpointer data)
 {
 	struct near_tag *tag = data;
-	GList *list;
 
 	DBG("tag %p", tag);
 
-	for (list = tag->records; list; list = list->next) {
-		struct near_ndef_record *record = list->data;
+	near_ndef_records_free(tag->records);
 
-		__near_ndef_record_free(record);
-	}
-
-	DBG("record freed");
-
-	g_list_free(tag->records);
 	g_free(tag->path);
 	g_free(tag->data);
 	g_free(tag);
-
-	DBG("Done");
 }
 
 int __near_tag_init(void)

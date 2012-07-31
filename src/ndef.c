@@ -56,6 +56,7 @@ enum record_tnf {
 #define RECORD_TNF_BIT(val) (val & 0x7)
 
 #define NDEF_MSG_MIN_LENGTH 0x03
+#define NDEF_PAYLOAD_LENGTH_OFFSET 0x02
 
 #define RECORD_MB    0x80
 #define RECORD_ME    0x40
@@ -103,6 +104,7 @@ struct near_ndef_record_header {
 	uint8_t *il_field;
 	uint32_t payload_len;
 	uint32_t offset;
+	uint8_t	type_len;
 	enum record_type rec_type;
 	char *type_name;
 };
@@ -136,6 +138,57 @@ struct near_ndef_mime_record {
 	char *type;
 };
 
+enum carrier_power_state {
+	CPS_INACTIVE			=   0x00,
+	CPS_ACTIVE			=   0x01,
+	CPS_ACTIVATING			=   0x02,
+	CPS_UNKNOWN			=   0x03,
+};
+
+/* Handover record definitions */
+
+/* alternative record (AC) */
+#define AC_RECORD_PAYLOAD_LEN	4
+
+struct near_ndef_ac_record {
+	enum carrier_power_state cps;	/* carrier power state */
+
+	uint8_t cdr_len;	/* carrier data reference length: 0x01 */
+	uint8_t	cdr;		/* carrier data reference */
+	uint8_t adata_refcount;	/* auxiliary data reference count */
+
+	/* !: if adata_refcount == 0, then there's no data reference */
+	uint16_t **adata;	/* auxiliary data reference */
+};
+
+/*
+ * carrier data (see cdr in near_ndef_ac_record )
+ * These settings can be retrieved from mime, carrier records, etc...
+ */
+struct near_ndef_carrier_data {
+	uint8_t	cdr;		/* carrier data reference */
+	uint8_t *data;
+	size_t data_len;
+};
+
+/* Default Handover version */
+#define HANDOVER_VERSION	0x12
+
+/* General Handover Request/Select record */
+struct near_ndef_ho_record {
+	uint8_t version;		/* version id */
+	uint16_t collision_record;	/* collision record */
+
+	uint8_t number_of_ac_records;	/* At least 1 ac is needed */
+	struct near_ndef_ac_record **ac_records;
+
+	/* Optional records */
+	uint16_t *err_record;	/* not NULL if present */
+
+	uint8_t number_of_cfg_records;	/* extra NDEF records */
+	struct near_ndef_mime_record **cfg_records;
+};
+
 struct near_ndef_record {
 	char *path;
 
@@ -148,6 +201,9 @@ struct near_ndef_record {
 
 	/* MIME type */
 	struct near_ndef_mime_record *mime;
+
+	/* HANDOVER type */
+	struct near_ndef_ho_record   *ho;
 };
 
 static DBusConnection *connection = NULL;
@@ -418,8 +474,10 @@ static DBusMessage *get_properties(DBusConnection *conn,
 	return reply;
 }
 
-static GDBusMethodTable record_methods[] = {
-	{ "GetProperties",     "",      "a{sv}", get_properties     },
+static const GDBusMethodTable record_methods[] = {
+	{ GDBUS_METHOD("GetProperties",
+				NULL, GDBUS_ARGS({"properties", "a{sv}"}),
+				get_properties) },
 	{ },
 };
 
@@ -480,6 +538,34 @@ static void free_mime_record(struct near_ndef_mime_record *mime)
 	mime = NULL;
 }
 
+static void free_ac_record(struct near_ndef_ac_record *ac)
+{
+	if (ac == NULL)
+		return;
+
+	g_free(ac->adata);
+	g_free(ac);
+	ac = NULL;
+}
+
+static void free_ho_record(struct near_ndef_ho_record *ho)
+{
+	int i;
+
+	if (ho == NULL)
+		return;
+
+	if (ho->ac_records != NULL) {
+		for (i = 0; i < ho->number_of_ac_records; i++)
+			free_ac_record(ho->ac_records[i]);
+	}
+
+	g_free(ho->ac_records);
+	g_free(ho);
+
+	ho = NULL;
+}
+
 static void free_ndef_record(struct near_ndef_record *record)
 {
 	if (record == NULL)
@@ -493,14 +579,17 @@ static void free_ndef_record(struct near_ndef_record *record)
 		case RECORD_TYPE_WKT_SIZE:
 		case RECORD_TYPE_WKT_TYPE:
 		case RECORD_TYPE_WKT_ACTION:
-		case RECORD_TYPE_WKT_HANDOVER_REQUEST:
-		case RECORD_TYPE_WKT_HANDOVER_SELECT:
 		case RECORD_TYPE_WKT_HANDOVER_CARRIER:
 		case RECORD_TYPE_WKT_ALTERNATIVE_CARRIER:
 		case RECORD_TYPE_WKT_COLLISION_RESOLUTION:
 		case RECORD_TYPE_WKT_ERROR:
 		case RECORD_TYPE_UNKNOWN:
 		case RECORD_TYPE_ERROR:
+			break;
+
+		case RECORD_TYPE_WKT_HANDOVER_REQUEST:
+		case RECORD_TYPE_WKT_HANDOVER_SELECT:
+			free_ho_record(record->ho);
 			break;
 
 		case RECORD_TYPE_WKT_TEXT:
@@ -567,7 +656,8 @@ static enum record_type get_external_record_type(uint8_t *type,
 {
 	DBG("");
 
-	if (strncmp((char *) type, "nokia.com:bt", 12) == 0)
+	if (strncmp((char *) type, BT_MIME_STRING_2_0,
+					strlen(BT_MIME_STRING_2_0)) == 0)
 		return RECORD_TYPE_MIME_TYPE;
 	else
 		return RECORD_TYPE_UNKNOWN;
@@ -707,7 +797,7 @@ static struct near_ndef_record_header *parse_record_header(uint8_t *rec,
 					uint32_t offset, uint32_t length)
 {
 	struct near_ndef_record_header *rec_header = NULL;
-	uint8_t type_len, *type = NULL;
+	uint8_t *type = NULL;
 
 	DBG("length %d", length);
 
@@ -733,7 +823,7 @@ static struct near_ndef_record_header *parse_record_header(uint8_t *rec,
 		rec_header->il, rec_header->tnf);
 
 	offset++;
-	type_len = rec[offset++];
+	rec_header->type_len = rec[offset++];
 
 	if (rec_header->sr == 1) {
 		rec_header->payload_len = rec[offset++];
@@ -755,16 +845,16 @@ static struct near_ndef_record_header *parse_record_header(uint8_t *rec,
 			goto fail;
 	}
 
-	if (type_len > 0) {
-		if ((offset + type_len) > length)
+	if (rec_header->type_len > 0) {
+		if ((offset + rec_header->type_len) > length)
 			goto fail;
 
-		type = g_try_malloc0(type_len);
+		type = g_try_malloc0(rec_header->type_len);
 		if (type == NULL)
 			goto fail;
 
-		memcpy(type, rec + offset, type_len);
-		offset += type_len;
+		memcpy(type, rec + offset, rec_header->type_len);
+		offset += rec_header->type_len;
 
 		if (offset >= length)
 			goto fail;
@@ -789,9 +879,10 @@ static struct near_ndef_record_header *parse_record_header(uint8_t *rec,
 	if ((offset + rec_header->payload_len) > length)
 		goto fail;
 
-	rec_header->rec_type = get_record_type(rec_header->tnf, type, type_len);
+	rec_header->rec_type = get_record_type(rec_header->tnf, type,
+							rec_header->type_len);
 	rec_header->offset = offset;
-	rec_header->type_name = g_strndup((char *) type, type_len);
+	rec_header->type_name = g_strndup((char *) type, rec_header->type_len);
 
 	g_free(type);
 
@@ -1176,7 +1267,7 @@ fail:
 static struct near_ndef_mime_record *
 parse_mime_type(struct near_ndef_record *record,
 			uint8_t *ndef_data, size_t ndef_length, size_t offset,
-			uint32_t payload_length)
+			uint32_t payload_length, near_bool_t bt_pair)
 {
 	struct near_ndef_mime_record *mime = NULL;
 	int err = 0;
@@ -1192,13 +1283,13 @@ parse_mime_type(struct near_ndef_record *record,
 
 	mime->type = g_strdup(record->header->type_name);
 
-	DBG("MIME Type  '%s'", mime->type);
-	if (strcmp(mime->type, "application/vnd.bluetooth.ep.oob") == 0) {
-		err = __near_bt_parse_oob_record(BT_MIME_V2_1,
-				&ndef_data[offset]);
-	} else if (strcmp(mime->type, "nokia.com:bt") == 0) {
-		err = __near_bt_parse_oob_record(BT_MIME_V2_0,
-				&ndef_data[offset]);
+	DBG("MIME Type  '%s' action: %d", mime->type, bt_pair);
+	if (strcmp(mime->type, BT_MIME_STRING_2_1) == 0) {
+		err = __near_bluetooth_parse_oob_record(BT_MIME_V2_1,
+				&ndef_data[offset], bt_pair);
+	} else if (strcmp(mime->type, BT_MIME_STRING_2_0) == 0) {
+		err = __near_bluetooth_parse_oob_record(BT_MIME_V2_0,
+				&ndef_data[offset], bt_pair);
 	}
 
 	if (err < 0) {
@@ -1209,6 +1300,703 @@ parse_mime_type(struct near_ndef_record *record,
 	}
 
 	return mime;
+}
+
+/* Set the MB/ME bit in message header */
+static uint8_t near_ndef_set_mb_me(uint8_t *hdr, near_bool_t first_rec,
+						near_bool_t last_rec)
+{
+	/* Reset bits 0x40 and 0x80*/
+	*hdr &= (0xFF & (~(RECORD_MB | RECORD_ME)));
+
+	/* Set if needed */
+	if (first_rec == TRUE)
+		*hdr |= RECORD_MB;
+	if (last_rec == TRUE)
+		*hdr |= RECORD_ME;
+
+	return *hdr;
+}
+
+/**
+ * @brief Allocates ndef message struture
+ *
+ * Allocates ndef message structure and fill message header byte,
+ * type length byte, payload length and type name. Offset is payload
+ * first byte (caller of this API can start filling their payload
+ * from offset value).
+ *
+ * @note : caller responsibility to free the input and output
+ *         parameters memory.
+ *
+ * @param[in] type_name    Record type name
+ * @param[in] payload_len  Record payload length
+ * @param[in] payload_id   Record payload id string
+ * @param[in] payload_id_len  Record payload id string length
+ * @param[in] tnf          Type name format to set
+ * @param[in] first_rec    Message begin (MB) flag
+ * @param[in] last_rec     Message end (ME) flag
+ *
+ * @return struct near_ndef_message * - Success
+ *         NULL - Failure
+ */
+static struct near_ndef_message *ndef_message_alloc_complete(char *type_name,
+		uint32_t payload_len,
+		char *payload_id,
+		uint8_t payload_id_len,
+		enum record_tnf tnf,
+		near_bool_t first_rec,
+		near_bool_t last_rec)
+{
+	struct near_ndef_message *msg;
+	uint8_t hdr = 0, type_len, sr_bit, il_bit, id_len;
+
+	msg = g_try_malloc0(sizeof(struct near_ndef_message));
+	if (msg == NULL)
+		return NULL;
+
+	msg->length = 0;
+	msg->offset = 0;
+	msg->length++; /* record header*/
+	msg->length++; /* type name length byte*/
+
+	type_len = (type_name != NULL) ? strlen(type_name) : 0;
+	id_len = (payload_id != NULL) ? payload_id_len : 0;
+	sr_bit =  (payload_len <= NDEF_MSG_SHORT_RECORD_MAX_LENGTH)
+					? TRUE : FALSE;
+
+	il_bit = (payload_id != NULL) ? TRUE : FALSE;
+
+	msg->length += (sr_bit == TRUE) ? 1 : 4;
+	msg->length += (il_bit == TRUE) ? 1 : 0;
+	msg->length += type_len;
+	msg->length += payload_len;
+	msg->length += id_len;
+
+	msg->data = g_try_malloc0(msg->length);
+	if (msg->data == NULL)
+		goto fail;
+
+	/* Set MB ME bits */
+	hdr = near_ndef_set_mb_me(&hdr, first_rec, last_rec);
+
+	if (sr_bit == TRUE)
+		hdr |= RECORD_SR;
+
+	hdr = RECORD_TNF_WKT_SET(hdr);
+	if (il_bit == TRUE)
+		hdr |= RECORD_IL;
+
+	switch (tnf) {
+	case RECORD_TNF_EMPTY:
+		hdr = RECORD_TNF_EMPTY_SET(hdr);
+		break;
+
+	case RECORD_TNF_URI:
+		hdr = RECORD_TNF_URI_SET(hdr);
+		break;
+
+	case RECORD_TNF_EXTERNAL:
+		hdr = RECORD_TNF_EXTERNAL_SET(hdr);
+		break;
+	case RECORD_TNF_UNKNOWN:
+		hdr = RECORD_TNF_UKNOWN_SET(hdr);
+		break;
+
+	case RECORD_TNF_UNCHANGED:
+		hdr = RECORD_TNF_UNCHANGED_SET(hdr);
+		break;
+
+	case RECORD_TNF_WELLKNOWN:
+		hdr = RECORD_TNF_WKT_SET(hdr);
+		break;
+
+	case RECORD_TNF_MIME:
+		hdr = RECORD_TNF_MIME_SET(hdr);
+		break;
+	}
+
+	msg->data[msg->offset++] = hdr;
+	msg->data[msg->offset++] = type_len;
+
+	if (sr_bit == TRUE) {
+		msg->data[msg->offset++] = payload_len;
+	} else {
+		fillb32((msg->data + msg->offset), payload_len);
+		msg->offset += 4;
+	}
+
+	if (il_bit == TRUE)
+		msg->data[msg->offset++] = payload_id_len;
+
+	if (type_name != NULL) {
+		memcpy(msg->data + msg->offset, type_name, type_len);
+		msg->offset += type_len;
+	}
+
+	if (il_bit == TRUE) {
+		memcpy(msg->data + msg->offset, payload_id, payload_id_len);
+		msg->offset += payload_id_len;
+	}
+
+	return msg;
+
+fail:
+	near_error("ndef message struct allocation failed");
+	g_free(msg->data);
+	g_free(msg);
+
+	return NULL;
+}
+
+/*
+ *  @brief Allocates ndef message structure
+ *
+ *  This is a wrapper to ndef_message_alloc, as, in most cases,
+ *  there's no payload id, and MB=TRUE and ME=TRUE. Default type name format
+ *  is also set to RECORD_TNF_WELLKNOWN
+ *
+ */
+static struct near_ndef_message *ndef_message_alloc(char* type_name,
+							uint32_t payload_len)
+{
+	return ndef_message_alloc_complete(type_name, payload_len,
+			NULL, 0,
+			RECORD_TNF_WELLKNOWN,
+			TRUE, TRUE);
+}
+
+static struct near_ndef_ac_record *parse_ac_record(uint8_t *rec,
+						uint32_t length)
+{
+	struct near_ndef_ac_record *ac_record = NULL;
+	uint32_t offset;
+
+	DBG("");
+
+	if (rec == NULL)
+		return NULL;
+
+	offset = 0;
+	ac_record = g_try_malloc0(sizeof(struct near_ndef_ac_record));
+	if (ac_record == NULL)
+		goto fail;
+
+	/* Carrier flag */
+	ac_record->cps = rec[offset];    /* TODO Check enum */
+	offset++;
+
+	/* Carrier data reference length */
+	ac_record->cdr_len = rec[offset];
+
+	/* Carrier data reference */
+	offset++;
+	ac_record->cdr = rec[offset];
+	offset = offset + ac_record->cdr_len;
+
+	/* Auxiliary data reference count */
+	ac_record->adata_refcount = rec[offset];
+	offset++;
+
+	if (ac_record->adata_refcount == 0)
+		return ac_record;
+
+	/* save the auxiliary data reference */
+	ac_record->adata = g_try_malloc0(
+			ac_record->adata_refcount * sizeof(uint16_t));
+	if (ac_record->adata == NULL)
+		goto fail;
+
+	memcpy(ac_record->adata, rec + offset,
+			ac_record->adata_refcount * sizeof(uint16_t));
+
+	/* and leave */
+	return ac_record;
+
+fail:
+	near_error("ac record parsing failed");
+	free_ac_record(ac_record);
+
+	return NULL;
+}
+
+/* carrier power state & carrier reference */
+static struct near_ndef_message *near_ndef_prepare_ac_message(uint8_t cps,
+								char cdr)
+{
+	struct near_ndef_message *ac_msg;
+
+	/* alloc "ac" message minus adata*/
+	ac_msg = ndef_message_alloc_complete("ac", AC_RECORD_PAYLOAD_LEN,
+					NULL, 0,
+					RECORD_TNF_WELLKNOWN,
+					TRUE, TRUE);
+	if (ac_msg == NULL)
+		return NULL;
+
+	/* Prepare ac message */
+	ac_msg->data[ac_msg->offset++] = cps;
+	ac_msg->data[ac_msg->offset++] = 1;	/* cdr_len def size */
+	ac_msg->data[ac_msg->offset++] = cdr;	/* cdr */
+	ac_msg->data[ac_msg->offset] = 0;	/* adata ref count */
+
+	return ac_msg;
+}
+
+/* Collision Record message */
+static struct near_ndef_message *near_ndef_prepare_cr_message(uint16_t cr_id)
+{
+	struct near_ndef_message *cr_msg;
+
+	cr_msg = ndef_message_alloc_complete("cr", sizeof(uint16_t),
+						NULL, 0,
+						RECORD_TNF_WELLKNOWN,
+						TRUE, TRUE);
+	if (cr_msg == NULL)
+		return NULL;
+
+	/* Prepare ac message */
+	*(uint16_t *)(cr_msg->data + cr_msg->offset) = g_htons(cr_id);
+
+	return cr_msg;
+}
+
+/* Prepare the bluetooth data record */
+static struct near_ndef_message *near_ndef_prepare_bt_message(uint8_t *bt_data,
+			int bt_data_len, char cdr, uint8_t cdr_len)
+{
+	struct near_ndef_message *bt_msg = NULL;
+
+	if (bt_data == NULL)
+		goto fail;
+
+	bt_msg = ndef_message_alloc_complete(BT_MIME_STRING_2_1, bt_data_len,
+					&cdr, cdr_len, RECORD_TNF_MIME,
+					TRUE, TRUE);
+	if (bt_msg == NULL)
+		goto fail;
+
+	/* store data */
+	memcpy(bt_msg->data + bt_msg->offset, bt_data, bt_data_len);
+
+	return bt_msg;
+
+fail:
+	if (bt_msg != NULL)
+		g_free(bt_msg->data);
+
+	g_free(bt_msg);
+
+	return NULL;
+}
+
+/*
+ * @brief Prepare Handover select record with mandatory fields.
+ *
+ * TODO: only mime (BT) are supported now... Wifi will come soon...
+ * Only 1 ac record + 1 collision record+ Hr header
+ */
+struct near_ndef_message *near_ndef_prepare_handover_record(char* type_name,
+					struct near_ndef_record *record,
+					enum near_ndef_handover_carrier carrier)
+{
+	uint8_t *oob_data = NULL;
+	int oob_size;
+	struct near_ndef_message *hs_msg = NULL;
+	struct near_ndef_message *ac_msg = NULL;
+	struct near_ndef_message *cr_msg = NULL;
+	struct near_ndef_message *bt_msg = NULL;
+	uint16_t collision;
+	uint8_t hs_length;
+	char cdr = '0';			/* Carrier data reference */
+
+	if (record->ho == NULL)
+		goto fail;
+
+	collision = record->ho->collision_record;
+
+	/*
+	 * Prepare records to be added
+	 * now prepare the cr message: MB=1 ME=0
+	 */
+	if (collision != 0) {
+		cr_msg = near_ndef_prepare_cr_message(collision);
+		if (cr_msg == NULL)
+			goto fail;
+	}
+
+	/*
+	 * ac record: if only one: MB=0 ME=1
+	 * cps should be active
+	 */
+	ac_msg = near_ndef_prepare_ac_message(CPS_ACTIVE, cdr);
+	if (ac_msg == NULL)
+		goto fail;
+
+	switch (carrier) {
+	case NEAR_CARRIER_BLUETOOTH:
+		/* Retrieve the bluetooth settings */
+		oob_data = __near_bluetooth_local_get_properties(&oob_size);
+		if (oob_data == NULL) {
+			near_error("Getting Bluetooth OOB data failed");
+			goto fail;
+		}
+
+		bt_msg = near_ndef_prepare_bt_message(oob_data, oob_size,
+								cdr, 1);
+		if (bt_msg == NULL)
+			goto fail;
+
+		near_ndef_set_mb_me(bt_msg->data, FALSE, TRUE);
+
+		break;
+
+	case NEAR_CARRIER_WIFI:
+		goto fail;
+	}
+
+	/*
+	 * Build the complete handover frame
+	 * Prepare Hs or Hr message (1 for version)
+	 */
+	hs_length = 1 + ac_msg->length;
+	if (cr_msg != NULL)
+		hs_length += cr_msg->length;
+
+	if (bt_msg != NULL)
+		hs_msg = ndef_message_alloc(type_name, hs_length +
+								bt_msg->length);
+	else
+		hs_msg = ndef_message_alloc(type_name, hs_length);
+	if (hs_msg == NULL)
+		goto fail;
+
+	/*
+	 * The handover payload length is not the *real* length.
+	 * The PL refers to the NDEF record, not the extra ones.
+	 * So, we have to fix the payload length in the header.
+	 */
+	hs_msg->data[NDEF_PAYLOAD_LENGTH_OFFSET] = hs_length;
+
+	/* Fill the message .... */
+	near_ndef_set_mb_me(hs_msg->data, TRUE, FALSE);
+
+	/* Add version */
+	hs_msg->data[hs_msg->offset++] = HANDOVER_VERSION;
+
+	/* copy cr */
+	if (cr_msg != NULL) {
+		near_ndef_set_mb_me(cr_msg->data, TRUE, FALSE);
+		memcpy(hs_msg->data + hs_msg->offset, cr_msg->data,
+				cr_msg->length);
+		hs_msg->offset += cr_msg->length;
+	}
+
+	/* copy ac */
+	if (cr_msg != NULL)
+		near_ndef_set_mb_me(ac_msg->data, FALSE, TRUE);
+	else
+		near_ndef_set_mb_me(ac_msg->data, TRUE, TRUE);
+
+	memcpy(hs_msg->data + hs_msg->offset, ac_msg->data, ac_msg->length);
+	hs_msg->offset += ac_msg->length;
+
+	if (hs_msg->offset > hs_msg->length)
+		goto fail;
+
+	/*
+	 * Additionnal NDEF (associated to the ac records)
+	 * Add the BT record which is not part in hs initial size
+	 */
+	if (bt_msg != NULL) {
+		near_ndef_set_mb_me(hs_msg->data, TRUE, FALSE);
+
+		memcpy(hs_msg->data + hs_msg->offset, bt_msg->data,
+							bt_msg->length);
+	}
+
+	if (ac_msg != NULL) {
+		g_free(ac_msg->data);
+		g_free(ac_msg);
+	}
+
+	if (cr_msg != NULL) {
+		g_free(cr_msg->data);
+		g_free(cr_msg);
+	}
+
+	if (bt_msg != NULL) {
+		g_free(bt_msg->data);
+		g_free(bt_msg);
+	}
+
+	g_free(oob_data);
+
+	near_info("handover select record preparation OK");
+	return hs_msg;
+
+fail:
+	near_error("handover select record preparation failed");
+
+	if (ac_msg != NULL) {
+		g_free(ac_msg->data);
+		g_free(ac_msg);
+	}
+
+	if (cr_msg != NULL) {
+		g_free(cr_msg->data);
+		g_free(cr_msg);
+	}
+
+	if (hs_msg != NULL) {
+		g_free(hs_msg->data);
+		g_free(hs_msg);
+	}
+
+	if (bt_msg != NULL) {
+		g_free(bt_msg->data);
+		g_free(bt_msg);
+	}
+
+	g_free(oob_data);
+
+	return NULL;
+}
+
+/* Code to fill hr record structure from acs and mimes lists */
+static int near_fill_ho_record(struct near_ndef_ho_record *ho,
+					GSList *acs, GSList *mimes)
+{
+	int rec_count;
+	int i;
+	GSList *temp;
+
+
+	rec_count = g_slist_length(acs);
+	ho->ac_records = g_try_malloc0(rec_count *
+			sizeof(struct near_ndef_ac_record *));
+	if (ho->ac_records == NULL)
+		goto fail;
+	temp = acs;
+	for (i = 0; i < rec_count; i++) {
+		ho->ac_records[i] = temp->data;
+		temp = temp->next;
+	}
+	ho->number_of_ac_records = rec_count;
+	g_slist_free(acs);
+
+	/* Same process for cfg mimes */
+	rec_count = g_slist_length(mimes);
+	ho->cfg_records = g_try_malloc0(rec_count *
+			sizeof(struct near_ndef_mime_record *));
+	if (ho->cfg_records == NULL)
+		goto fail;
+	temp = mimes;
+	for (i = 0; i < rec_count; i++) {
+		ho->cfg_records[i] = temp->data;
+		temp = temp->next;
+	}
+
+	ho->number_of_cfg_records = rec_count;
+	g_slist_free(mimes);
+
+	return 0;
+fail:
+	g_free(ho->ac_records);
+	g_free(ho->cfg_records);
+	ho->ac_records = NULL;
+	ho->cfg_records = NULL;
+	return -ENOMEM;
+}
+
+/*
+ * @brief Parse the Handover request record
+ * This function will parse an Hr record, retrieving sub records
+ * like (ac, cr, er) but it  will also get the associated
+ * ndefs (eg: handover carrier record, mime type for BT)
+ * In a handover frame, only the following types are expected:
+ *     RECORD_TYPE_WKT_HANDOVER_CARRIER:
+ *     RECORD_TYPE_WKT_COLLISION_RESOLUTION
+ *     RECORD_TYPE_MIME_TYPE
+ *     RECORD_TYPE_WKT_ALTERNATIVE_CARRIER
+ */
+static struct near_ndef_ho_record *parse_ho_record(enum record_type rec_type,
+		uint8_t *rec, uint32_t ho_length, size_t frame_length,
+		uint8_t ho_mb, uint8_t ho_me)
+{
+	struct near_ndef_ho_record *ho_record = NULL;
+	struct near_ndef_ac_record *ac = NULL;
+	struct near_ndef_mime_record *mime = NULL;
+	struct near_ndef_record *trec = NULL;
+	GSList *acs = NULL, *mimes = NULL;
+	uint8_t mb = 0, me = 0;
+	uint32_t offset;
+	int16_t	count_ac = 0;
+	near_bool_t bt_pair;
+
+	DBG("");
+
+	if (rec == NULL)
+		return NULL;
+	offset = 0;
+
+	/* Create the handover record */
+	ho_record = g_try_malloc0(sizeof(struct near_ndef_ho_record));
+	if (ho_record == NULL)
+		return NULL;
+
+	/* Version is the first mandatory field of hr record */
+	ho_record->version = rec[offset];
+	if (ho_record->version > HANDOVER_VERSION) {
+		near_error("Unsupported version (%d)", ho_record->version);
+		goto fail;
+	}
+
+	offset = offset + 1;
+	frame_length = frame_length - 1;	/* Remove Hr length size */
+
+	/* We should work on the whole frame */
+	ho_length = frame_length;
+
+	while (offset < ho_length) {
+		/* Create local record for mime parsing */
+		trec = g_try_malloc0(sizeof(struct near_ndef_record));
+		if (trec == NULL)
+			return NULL;
+
+		trec->header = parse_record_header(rec, offset, ho_length);
+
+		if (trec->header == NULL)
+			goto fail;
+
+		offset = trec->header->offset;
+
+		switch (trec->header->rec_type) {
+		case RECORD_TYPE_WKT_SMART_POSTER:
+		case RECORD_TYPE_WKT_SIZE:
+		case RECORD_TYPE_WKT_TEXT:
+		case RECORD_TYPE_WKT_TYPE:
+		case RECORD_TYPE_WKT_ACTION:
+		case RECORD_TYPE_WKT_URI:
+		case RECORD_TYPE_WKT_HANDOVER_REQUEST:
+		case RECORD_TYPE_WKT_HANDOVER_SELECT:
+		case RECORD_TYPE_WKT_ERROR:
+		case RECORD_TYPE_UNKNOWN:
+		case RECORD_TYPE_ERROR:
+			break;
+
+		case RECORD_TYPE_WKT_HANDOVER_CARRIER:
+			DBG("HANDOVER_CARRIER");
+			/*
+			 * TODO process Hc record too !!!
+			 * Used for Wifi session
+			 */
+			break;
+
+		case RECORD_TYPE_MIME_TYPE:
+			DBG("TYPE_MIME_TYPE");
+
+			/* check mb/me bits */
+			if (validate_record_begin_and_end_bits(&ho_mb, &ho_me,
+				trec->header->mb, trec->header->me) != 0) {
+				DBG("validate mb me failed");
+				goto fail;
+			}
+
+			/*
+			 * In Handover, the mime type gives bluetooth handover
+			 * configuration datas.
+			 * If we initiated the session, the received Hs frame
+			 * is the signal to launch the pairing.
+			 */
+			if (rec_type == RECORD_TYPE_WKT_HANDOVER_SELECT)
+				bt_pair = TRUE;
+			else
+				bt_pair = FALSE;
+
+			mime = parse_mime_type(trec, rec, frame_length,
+					offset, trec->header->payload_len,
+					bt_pair);
+			if (mime == NULL)
+				goto fail;
+
+			/* add the mime to the list */
+			mimes = g_slist_append(mimes, mime);
+			count_ac--;
+			if (count_ac == 0)
+				offset = ho_length;
+			break;
+
+		case RECORD_TYPE_WKT_COLLISION_RESOLUTION:
+			DBG("COLLISION_RESOLUTION");
+
+			/* check nested mb/me bits */
+			if (validate_record_begin_and_end_bits(&mb, &me,
+				trec->header->mb, trec->header->me) != 0) {
+				DBG("validate mb me failed");
+				goto fail;
+			}
+
+			ho_record->collision_record =
+					g_ntohs(*((uint16_t *)(rec + offset)));
+			break;
+
+		case RECORD_TYPE_WKT_ALTERNATIVE_CARRIER:
+			DBG("ALTERNATIVE_CARRIER");
+
+			/* check nested mb/me bits */
+			if (validate_record_begin_and_end_bits(&mb, &me,
+				trec->header->mb, trec->header->me) != 0) {
+				DBG("validate mb me failed");
+				goto fail;
+			}
+
+			ac = parse_ac_record(rec + offset,
+					trec->header->payload_len);
+			if (ac == NULL)
+				goto fail;
+
+			acs = g_slist_append(acs, ac);
+
+			/* TODO check if adata are present */
+			count_ac++;
+			break;
+		}
+
+		offset += trec->header->payload_len;
+		g_free(trec->header->il_field);
+		g_free(trec->header->type_name);
+		g_free(trec->header);
+		trec->header = NULL;
+
+		g_free(trec);
+	}
+
+	if ((acs == NULL) || (mimes == NULL))
+		return ho_record;
+
+	/* Save the records */
+	if (near_fill_ho_record(ho_record, acs, mimes) < 0)
+		goto fail;
+
+	near_error("handover record parsing complete");
+	return ho_record;
+
+fail:
+	near_error("handover record parsing failed");
+
+	if (trec != NULL) {
+		if (trec->header != NULL) {
+			g_free(trec->header->type_name);
+			g_free(trec->header->il_field);
+			g_free(trec->header);
+		}
+		g_free(trec);
+	}
+
+	free_ho_record(ho_record);
+
+	return NULL;
 }
 
 int __near_ndef_record_register(struct near_ndef_record *record, char *path)
@@ -1265,14 +2053,32 @@ GList *near_ndef_parse(uint8_t *ndef_data, size_t ndef_length)
 		case RECORD_TYPE_WKT_SIZE:
 		case RECORD_TYPE_WKT_TYPE:
 		case RECORD_TYPE_WKT_ACTION:
-		case RECORD_TYPE_WKT_HANDOVER_REQUEST:
-		case RECORD_TYPE_WKT_HANDOVER_SELECT:
 		case RECORD_TYPE_WKT_HANDOVER_CARRIER:
 		case RECORD_TYPE_WKT_ALTERNATIVE_CARRIER:
 		case RECORD_TYPE_WKT_COLLISION_RESOLUTION:
 		case RECORD_TYPE_WKT_ERROR:
 		case RECORD_TYPE_UNKNOWN:
 		case RECORD_TYPE_ERROR:
+			break;
+
+		case RECORD_TYPE_WKT_HANDOVER_REQUEST:
+		case RECORD_TYPE_WKT_HANDOVER_SELECT:
+			/*
+			 * Handover frame are a little bit special as the NDEF
+			 * length (specified in the header) is not the real
+			 * frame size. The complete frame includes extra NDEF
+			 * following the initial handover NDEF
+			 */
+			record->ho = parse_ho_record(record->header->rec_type,
+					ndef_data + offset,
+					record->header->payload_len,
+					ndef_length,
+					record->header->mb, record->header->me);
+			if (record->ho == NULL)
+				goto fail;
+
+			/* the complete frame is processed, break the loop */
+			record->header->payload_len = ndef_length;
 			break;
 
 		case RECORD_TYPE_WKT_TEXT:
@@ -1306,7 +2112,8 @@ GList *near_ndef_parse(uint8_t *ndef_data, size_t ndef_length)
 		case RECORD_TYPE_MIME_TYPE:
 			record->mime = parse_mime_type(record, ndef_data,
 						ndef_length, offset,
-						record->header->payload_len);
+						record->header->payload_len,
+						TRUE);
 
 
 			if (record->mime == NULL)
@@ -1329,81 +2136,136 @@ fail:
 	return records;
 }
 
-/**
- * @brief Allocates ndef message struture
- *
- * Allocates ndef message structure and fill message header byte,
- * type length byte, payload length and type name. Offset is payload
- * first byte (caller of this API can start filling their payload
- * from offset value).
- *
- * @note : caller responsibility to free the input and output
- *         parameters memory.
- *
- * @param[in] type_name    Record type name
- * @param[in] payload_len  Record payload length
- *
- * @return struct near_ndef_message * - Success
- *         NULL - Failure
- */
-static struct near_ndef_message *ndef_message_alloc(char* type_name,
-							uint32_t payload_len)
+void near_ndef_records_free(GList *records)
 {
-	struct near_ndef_message *msg;
-	uint8_t hdr = 0, type_len, sr_bit;
+	GList *list;
 
-	msg = g_try_malloc0(sizeof(struct near_ndef_message));
-	if (msg == NULL)
-		return NULL;
+	for (list = records; list; list = list->next) {
+		struct near_ndef_record *record = list->data;
 
-	msg->length = 0;
-	msg->offset = 0;
-	msg->length++; /* record header*/
-	msg->length++; /* type name length byte*/
+		__near_ndef_record_free(record);
+	}
 
-	type_len = (type_name != NULL) ? strlen(type_name) : 0;
-	sr_bit =  (payload_len <= NDEF_MSG_SHORT_RECORD_MAX_LENGTH)
-			? TRUE : FALSE;
+	g_list_free(records);
+}
 
-	msg->length += (sr_bit == TRUE) ? 1 : 4;
-	msg->length += type_len;
-	msg->length += payload_len;
+/*
+ * @brief Compute an NDEF record length
+ *
+ * Would compute ndef records length, even though the submitted frame
+ * is incomplete. This code is used in the handover read function, as
+ * we have to "guess" the final frame size.
+ *
+ * Message size for SR=1 is:
+ *  1 : ndef rec header (offset 0)
+ *  x : record type length (offset 1)
+ *  y : payload length (offset 2) 1 byte ONLY if SR=1
+ *	if SR=0: (4bytes) 32 bits
+ *  z : payload id length (offset 3) ONLY if il_length=1
+ * */
+int near_ndef_record_length(uint8_t *ndef_in, size_t ndef_in_length)
+{
+	int ndef_size;	 /* default size for NDEF hdr + rec typ len + payl */
+	size_t offset;
+	uint8_t hdr;
 
-	msg->data = g_try_malloc0(msg->length);
-	if (msg->data == NULL)
-		goto fail;
+	DBG("");
 
-	hdr |= RECORD_MB;
-	hdr |= RECORD_ME;
+	if (ndef_in_length < 3)
+		return -EINVAL;
 
-	if (sr_bit == TRUE)
-		hdr |= RECORD_SR;
+	ndef_size = 3;
+	offset = 0;
 
-	hdr = RECORD_TNF_WKT_SET(hdr);
+	/* save header byte */
+	hdr = ndef_in[offset];
+	offset++;
 
-	msg->data[msg->offset++] = hdr;
-	msg->data[msg->offset++] = type_len;
+	/* header->type_len */
+	ndef_size += ndef_in[offset++];
 
-	if (sr_bit == TRUE) {
-		msg->data[msg->offset++] = payload_len;
+	/* header->payload_len */
+	if (RECORD_SR_BIT(hdr) == 1) {
+		ndef_size += ndef_in[offset++];
 	} else {
-		fillb32((msg->data + msg->offset), payload_len);
-		msg->offset += 4;
+		ndef_size += g_ntohl(*((uint32_t *)(ndef_in + offset)));
+		offset += 4;
+
+		if (offset >= ndef_in_length)
+			return -ERANGE;
 	}
 
-	if (type_name != NULL) {
-		memcpy(msg->data + msg->offset, type_name, type_len);
-		msg->offset += type_len;
+	/* header->il */
+	ndef_size += RECORD_IL_BIT(hdr);
+
+	/* header->il_length */
+	if (RECORD_IL_BIT(hdr) == 1)
+		ndef_size += ndef_in[offset++];
+
+	DBG("near_ndef_message_length is %d", ndef_size);
+
+	return ndef_size;
+}
+
+int near_ndef_count_records(uint8_t *ndef_in, size_t ndef_in_length,
+			uint8_t record_type)
+{
+	uint8_t p_mb = 0, p_me = 0, err;
+	size_t offset;
+	struct near_ndef_record *record = NULL;
+	int counted_records = 0 ;
+
+	DBG("");
+
+	offset = 0;
+
+	if (ndef_in == NULL ||	ndef_in_length < NDEF_MSG_MIN_LENGTH) {
+		err = -EINVAL;
+		goto fail;
 	}
 
-	return msg;
+	while (offset < ndef_in_length) {
+		record = g_try_malloc0(sizeof(struct near_ndef_record));
+		if (record == NULL) {
+			err = -ENOMEM;
+			goto fail;
+		}
+
+		/* Create a record */
+		record->header = parse_record_header(ndef_in, offset,
+							ndef_in_length);
+		if (record->header == NULL) {
+			err = -EINVAL;
+			goto fail;
+		}
+
+		/* Validate MB ME */
+		if (validate_record_begin_and_end_bits(&p_mb, &p_me,
+					record->header->mb,
+					record->header->me) != 0) {
+			DBG("validate mb me failed");
+			err = -EINVAL;
+			goto fail;
+		}
+
+		/* Is this what we want ? */
+		if (record->header->rec_type == record_type)
+			counted_records++;
+
+		/* Jump to the next record */
+		offset = record->header->offset + record->header->payload_len;
+
+		free_ndef_record(record);
+	}
+
+	DBG("Type %d Records found: %d", record_type, counted_records);
+
+	return counted_records;
 
 fail:
-	near_error("ndef message struct allocation failed");
-	g_free(msg->data);
-	g_free(msg);
-
-	return NULL;
+	near_error("ndef counting failed");
+	free_ndef_record(record);
+	return err;
 }
 
 /**
@@ -1598,12 +2460,15 @@ fail:
 	return NULL;
 }
 
-static char *get_uri_field(DBusMessage *msg)
+static char *get_text_field(DBusMessage *msg, char *text)
 {
 	DBusMessageIter iter, arr_iter;
 	char *uri = NULL;
 
 	DBG("");
+
+	if (text == NULL)
+		return NULL;
 
 	dbus_message_iter_init(msg, &iter);
 	dbus_message_iter_recurse(&iter, &arr_iter);
@@ -1621,7 +2486,7 @@ static char *get_uri_field(DBusMessage *msg)
 
 		switch (dbus_message_iter_get_arg_type(&var_iter)) {
 		case DBUS_TYPE_STRING:
-			if (g_strcmp0(key, "URI") == 0)
+			if (g_strcmp0(key, text) == 0)
 				dbus_message_iter_get_basic(&var_iter, &uri);
 
 			break;
@@ -1631,6 +2496,16 @@ static char *get_uri_field(DBusMessage *msg)
 	}
 
 	return uri;
+}
+
+static inline char *get_uri_field(DBusMessage *msg)
+{
+	return get_text_field(msg, "URI");
+}
+
+static inline char *get_carrier_field(DBusMessage *msg)
+{
+	return get_text_field(msg, "Carrier");
 }
 
 static struct near_ndef_message *build_text_record(DBusMessage *msg)
@@ -1741,6 +2616,87 @@ static struct near_ndef_message *build_sp_record(DBusMessage *msg)
 						(uint8_t *)(uri + id_len));
 }
 
+static struct near_ndef_ac_record *build_ho_local_ac_record(void)
+{
+	struct near_ndef_ac_record *ac_record = NULL;
+
+	DBG("");
+
+	/* Allocate ac record */
+	ac_record = g_try_malloc0(sizeof(struct near_ndef_ac_record));
+	if (ac_record == NULL)
+		return NULL;
+
+	/* Carrier flag */
+	ac_record->cps = CPS_ACTIVE;    /* TODO Should reflect BT state */
+
+	/* Carrier data reference length */
+	ac_record->cdr_len = 1;
+
+	/* Carrier data reference */
+	ac_record->cdr = '0';
+
+	/* Auxiliary data reference count */
+	ac_record->adata_refcount = 0;
+
+	return ac_record;
+}
+
+static struct near_ndef_message *build_ho_record(DBusMessage *msg)
+{
+	char *carrier_type = NULL;
+	enum near_ndef_handover_carrier carrier;
+	struct near_ndef_record *record = NULL;
+
+	DBG("");
+
+	carrier_type = get_carrier_field(msg);
+	if (carrier_type == NULL) {
+		DBG("Empty carrier name");
+		return NULL;
+	}
+
+	if (g_strcmp0(carrier_type, "bluetooth") == 0)
+		carrier = NEAR_CARRIER_BLUETOOTH;
+	else if (g_strcmp0(carrier_type, "wifi") == 0)
+		carrier = NEAR_CARRIER_WIFI;
+	else {
+		DBG("Invalid carrier name");
+		return NULL;
+	}
+
+	/* Build local record */
+	record = g_try_malloc0(sizeof(struct near_ndef_record));
+	if (record == NULL)
+		return NULL;
+
+	/* Do a Ho */
+	record->ho = g_try_malloc0(sizeof(struct near_ndef_ho_record));
+	if (record->ho == NULL)
+		goto fail;
+
+	/* fill the Ho */
+	record->ho->version = HANDOVER_VERSION;
+
+	record->ho->collision_record = 0x1664; /* TODO randomize it */
+	record->ho->err_record = NULL;
+
+	record->ho->number_of_ac_records = 1;
+	record->ho->ac_records = g_try_malloc0(
+					sizeof(struct near_ndef_ac_record *));
+	if (record->ho->ac_records == NULL)
+		goto fail;
+	record->ho->ac_records[0] = build_ho_local_ac_record();
+
+	return near_ndef_prepare_handover_record("Hr", record, carrier);
+
+fail:
+	free_ho_record(record->ho);
+	g_free(record);
+
+	return NULL;
+}
+
 struct near_ndef_message *__ndef_build_from_message(DBusMessage *msg)
 {
 	DBusMessageIter iter;
@@ -1783,6 +2739,9 @@ struct near_ndef_message *__ndef_build_from_message(DBusMessage *msg)
 				break;
 			} else if (g_strcmp0(value, "SmartPoster") == 0) {
 				ndef = build_sp_record(msg);
+				break;
+			} else if (g_strcmp0(value, "Handover") == 0) {
+				ndef = build_ho_record(msg);
 				break;
 			} else {
 				near_error("%s not supported", value);

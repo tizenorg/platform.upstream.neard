@@ -32,7 +32,7 @@ src_neard_SOURCES = $(gdbus_sources) $(gweb_sources) $(builtin_sources) \
 			src/main.c src/error.c src/near.h src/log.c \
 			src/dbus.c src/manager.c src/adapter.c src/device.c \
 			src/tag.c src/plugin.c src/netlink.c src/ndef.c \
-			src/tlv.c src/bluetooth.c
+			src/tlv.c src/bluetooth.c src/handover.c
 
 src_neard_LDADD = $(builtin_libadd) @GLIB_LIBS@ @DBUS_LIBS@ @NETLINK_LIBS@ -lresolv -ldl
 
@@ -53,6 +53,12 @@ plugindir = $(libdir)/near/plugins
 
 configdir = ${sysconfdir}/neard
 
+dist_noinst_DATA = src/main.conf
+
+dbusdir = ${sysconfdir}/dbus-1/system.d/
+
+dist_dbus_DATA = src/org.neard.conf
+
 if MAINTAINER_MODE
 build_plugindir = $(abs_top_srcdir)/plugins/.libs
 else
@@ -65,11 +71,21 @@ EXTRA_DIST = src/genbuiltin $(doc_files)
 
 test_scripts = test/disable-adapter test/enable-adapter test/list-adapters \
 		test/dump-device test/dump-tag test/dump-record \
-		test/monitor-near test/start-poll test/stop-poll
+		test/monitor-near test/start-poll test/stop-poll test/write-tag \
+		test/push-device
 
 if TEST
 testdir = $(pkglibdir)/test
 test_SCRIPTS = $(test_scripts)
+endif
+
+if TOOLS
+noinst_PROGRAMS = tools/snep-send
+
+tools_snep_send_SOURCES = $(gdbus_sources) src/log.c src/dbus.c \
+			src/bluetooth.c src/ndef.c tools/snep-send.c
+tools_snep_send_LDADD = @GLIB_LIBS@ @DBUS_LIBS@
+
 endif
 
 include Makefile.plugins

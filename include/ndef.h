@@ -32,13 +32,29 @@ struct near_ndef_message {
 	uint8_t *data;
 };
 
+enum near_ndef_handover_carrier {
+	NEAR_CARRIER_BLUETOOTH,
+	NEAR_CARRIER_WIFI,
+};
+
+int near_ndef_count_records(uint8_t *ndef_in, size_t ndef_in_length,
+						uint8_t record_type);
+
+int near_ndef_record_length(uint8_t *ndef_in, size_t ndef_in_length);
+
 GList *near_ndef_parse(uint8_t *ndef_data, size_t ndef_length);
+
+void near_ndef_records_free(GList *records);
 
 struct near_ndef_message *near_ndef_prepare_text_record(char *encoding,
 					char *language_code, char *text);
 
 struct near_ndef_message *near_ndef_prepare_uri_record(uint8_t identifier,
 					 uint32_t field_length, uint8_t *field);
+
+struct near_ndef_message *near_ndef_prepare_handover_record(char* type_name,
+						struct near_ndef_record *record,
+						enum near_ndef_handover_carrier carrier);
 
 struct near_ndef_message *
 near_ndef_prepare_smartposter_record(uint8_t uri_identifier,

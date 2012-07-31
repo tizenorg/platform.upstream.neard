@@ -42,12 +42,18 @@ static DBusConnection *connection = NULL;
 
 static GHashTable *adapter_hash;
 
+#define NEAR_ADAPTER_MODE_INITIATOR 0x1
+#define NEAR_ADAPTER_MODE_TARGET    0x2
+#define NEAR_ADAPTER_MODE_DUAL      0x3
+
 struct near_adapter {
 	char *path;
 
 	char *name;
 	uint32_t idx;
 	uint32_t protocols;
+	uint32_t poll_mode;
+	uint32_t rf_mode;
 
 	near_bool_t powered;
 	near_bool_t polling;
@@ -119,6 +125,7 @@ static void polling_changed(struct near_adapter *adapter)
 static int adapter_start_poll(struct near_adapter *adapter)
 {
 	int err;
+	uint32_t im_protos, tm_protos;
 
 	if (g_hash_table_size(adapter->tags) > 0) {
 		DBG("Clearing tags");
@@ -127,7 +134,24 @@ static int adapter_start_poll(struct near_adapter *adapter)
 		__near_adapter_tags_changed(adapter->idx);
 	}
 
-	err = __near_netlink_start_poll(adapter->idx, adapter->protocols);
+	if (g_hash_table_size(adapter->devices) > 0) {
+		DBG("Clearing devices");
+
+		g_hash_table_remove_all(adapter->devices);
+		__near_adapter_devices_changed(adapter->idx);
+	}
+
+	DBG("Poll mode 0x%x", adapter->poll_mode);
+
+	im_protos = tm_protos = 0;
+
+	if (adapter->poll_mode & NEAR_ADAPTER_MODE_INITIATOR)
+		im_protos = adapter->protocols;
+
+	if (adapter->poll_mode & NEAR_ADAPTER_MODE_TARGET)
+		tm_protos = adapter->protocols;
+
+	err = __near_netlink_start_poll(adapter->idx, im_protos, tm_protos);
 	if (err < 0)
 		return err;
 
@@ -350,8 +374,12 @@ static DBusMessage *set_property(DBusConnection *conn,
 		dbus_message_iter_get_basic(&value, &powered);
 
 		err = __near_netlink_adapter_enable(adapter->idx, powered);
-		if (err < 0)
+		if (err < 0) {
+			if (err == -EALREADY)
+				return __near_error_already_enabled(msg);
+
 			return __near_error_failed(msg, -err);
+		}
 
 		adapter->powered = powered;
 	} else
@@ -360,13 +388,28 @@ static DBusMessage *set_property(DBusConnection *conn,
 	return g_dbus_create_reply(msg, DBUS_TYPE_INVALID);
 }
 
-static DBusMessage *start_poll(DBusConnection *conn,
+static DBusMessage *start_poll_loop(DBusConnection *conn,
 					DBusMessage *msg, void *data)
 {
 	struct near_adapter *adapter = data;
+	const char *dbus_mode;
 	int err;
 
 	DBG("conn %p", conn);
+
+	dbus_message_get_args(msg, NULL, DBUS_TYPE_STRING, &dbus_mode,
+							DBUS_TYPE_INVALID);
+
+	DBG("Mode %s", dbus_mode);
+
+	if (g_strcmp0(dbus_mode, "Initiator") == 0)
+		adapter->poll_mode = NEAR_ADAPTER_MODE_INITIATOR;
+	else if (g_strcmp0(dbus_mode, "Target") == 0)
+		adapter->poll_mode = NEAR_ADAPTER_MODE_TARGET;
+	else if (g_strcmp0(dbus_mode, "Dual") == 0)
+		adapter->poll_mode = NEAR_ADAPTER_MODE_DUAL;
+	else
+		adapter->poll_mode = NEAR_ADAPTER_MODE_INITIATOR;
 
 	err = adapter_start_poll(adapter);
 	if (err < 0)
@@ -375,7 +418,7 @@ static DBusMessage *start_poll(DBusConnection *conn,
 	return g_dbus_create_reply(msg, DBUS_TYPE_INVALID);
 }
 
-static DBusMessage *stop_poll(DBusConnection *conn,
+static DBusMessage *stop_poll_loop(DBusConnection *conn,
 					DBusMessage *msg, void *data)
 {
 	struct near_adapter *adapter = data;
@@ -410,16 +453,20 @@ static gboolean check_presence(gpointer user_data)
 
 	tag = adapter->tag_link;
 	if (tag == NULL)
-		return FALSE;
+		goto out_err;
 
 	err = __near_tag_check_presence(tag, tag_present_cb);
 	if (err < 0) {
 		DBG("Could not check target presence");
-
-		near_adapter_disconnect(adapter->idx);
-		if (adapter->constant_poll == TRUE)
-			adapter_start_poll(adapter);
+		goto out_err;
 	}
+
+	return FALSE;
+
+out_err:
+	near_adapter_disconnect(adapter->idx);
+	if (adapter->constant_poll == TRUE)
+		adapter_start_poll(adapter);
 
 	return FALSE;
 }
@@ -451,18 +498,24 @@ static void tag_present_cb(uint32_t adapter_idx, uint32_t target_idx,
 					check_presence, adapter);
 }
 
-static GDBusMethodTable adapter_methods[] = {
-	{ "GetProperties",     "",      "a{sv}", get_properties     },
-	{ "SetProperty",       "sv",    "",      set_property       },
-	{ "StartPoll",         "",      "",      start_poll         },
-	{ "StopPoll",          "",      "",      stop_poll          },
+static const GDBusMethodTable adapter_methods[] = {
+	{ GDBUS_METHOD("GetProperties",
+				NULL, GDBUS_ARGS({"properties", "a{sv}"}),
+				get_properties) },
+	{ GDBUS_METHOD("SetProperty",
+				GDBUS_ARGS({"name", "s"}, {"value", "v"}),
+				NULL, set_property) },
+	{ GDBUS_METHOD("StartPollLoop", GDBUS_ARGS({"name", "s"}), NULL,
+							start_poll_loop) },
+	{ GDBUS_METHOD("StopPollLoop", NULL, NULL, stop_poll_loop) },
 	{ },
 };
 
-static GDBusSignalTable adapter_signals[] = {
-	{ "PropertyChanged",		"sv"	},
-	{ "TagFound",		        "o"	},
-	{ "TagLost",			"o"	},
+static const GDBusSignalTable adapter_signals[] = {
+	{ GDBUS_SIGNAL("PropertyChanged",
+				GDBUS_ARGS({"name", "s"}, {"value", "v"})) },
+	{ GDBUS_SIGNAL("TagFound", GDBUS_ARGS({"address", "o"})) },
+	{ GDBUS_SIGNAL("TagLost", GDBUS_ARGS({"address", "o"})) },
 	{ }
 };
 
@@ -526,6 +579,9 @@ int __near_adapter_set_dep_state(uint32_t idx, near_bool_t dep)
 		return -ENODEV;
 
 	adapter->dep_up = dep;
+
+	if (dep == FALSE && adapter->constant_poll == TRUE)
+		adapter_start_poll(adapter);
 
 	return 0;
 }
@@ -730,6 +786,48 @@ int __near_adapter_remove_target(uint32_t idx, uint32_t target_idx)
 	return 0;
 }
 
+int __near_adapter_add_device(uint32_t idx, uint8_t *nfcid, uint8_t nfcid_len)
+{
+	struct near_adapter *adapter;
+
+	DBG("idx %d", idx);
+
+	adapter = g_hash_table_lookup(adapter_hash, GINT_TO_POINTER(idx));
+	if (adapter == NULL)
+		return -ENODEV;
+
+	adapter->polling = FALSE;
+	adapter->dep_up = TRUE;
+	polling_changed(adapter);
+
+	return adapter_add_device(adapter, 0, nfcid, nfcid_len);
+}
+
+int __near_adapter_remove_device(uint32_t idx)
+{
+	struct near_adapter *adapter;
+	uint32_t device_idx = 0;
+
+	DBG("idx %d", idx);
+
+	adapter = g_hash_table_lookup(adapter_hash, GINT_TO_POINTER(idx));
+	if (adapter == NULL)
+		return -ENODEV;
+
+	if (g_hash_table_remove(adapter->devices,
+			GINT_TO_POINTER(device_idx)) == FALSE)
+		return 0;
+
+	__near_adapter_devices_changed(idx);
+
+	adapter->dep_up = FALSE;
+
+	if (adapter->constant_poll == TRUE)
+		adapter_start_poll(adapter);
+
+	return 0;
+}
+
 static void adapter_flush_rx(struct near_adapter *adapter, int error)
 {
 	GList *list;
@@ -775,6 +873,12 @@ static gboolean adapter_recv_event(GIOChannel *channel, GIOCondition condition,
 		near_error("Error while reading NFC bytes");
 
 		adapter_flush_rx(adapter, -EIO);
+
+		near_adapter_disconnect(adapter->idx);
+
+		adapter->presence_timeout =
+			g_timeout_add_seconds(2 * CHECK_PRESENCE_PERIOD,
+					      check_presence, adapter);
 		return FALSE;
 	}
 
@@ -878,8 +982,8 @@ int near_adapter_disconnect(uint32_t idx)
 		adapter->watch = 0;
 	}
 
+	g_io_channel_unref(adapter->channel);
 	adapter->channel = NULL;
-	close(adapter->tag_sock);
 	adapter->tag_sock = -1;
 	adapter->tag_link = NULL;
 
@@ -933,6 +1037,25 @@ out_err:
 	}
 
 	return err;
+}
+
+static void adapter_listen(gpointer key, gpointer value, gpointer user_data)
+{
+	struct near_adapter *adapter = value;
+	struct near_device_driver *driver = user_data;
+
+	DBG("%s", adapter->path);
+
+	if (adapter->path == NULL)
+		return;
+
+	driver->listen(adapter->idx, device_read_cb);
+}
+
+
+void __near_adapter_listen(struct near_device_driver *driver)
+{
+	g_hash_table_foreach(adapter_hash, adapter_listen, driver);
 }
 
 int __near_adapter_init(void)

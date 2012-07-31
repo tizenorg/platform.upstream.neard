@@ -70,14 +70,15 @@ struct near_tag_driver {
 					near_tag_io_cb cb);
 	int (*check_presence)(uint32_t adapter_idx, uint32_t target_idx,
 						near_tag_io_cb cb);
+	int (*format)(uint32_t adapter_idx, uint32_t target_idx,
+					near_tag_io_cb cb);
 };
 
 struct near_tag;
 
 struct near_tag *near_tag_get_tag(uint32_t adapter_idx, uint32_t target_idx);
-int near_tag_set_uid(struct near_tag *tag, uint8_t *uid, size_t uid_length);
-int near_tag_set_ro(struct near_tag *tag, near_bool_t readonly);
-near_bool_t near_tag_get_ro(struct near_tag *tag);
+void near_tag_set_ro(struct near_tag *tag, near_bool_t readonly);
+void near_tag_set_blank(struct near_tag *tag, near_bool_t blank);
 int near_tag_add_data(uint32_t adapter_idx, uint32_t target_idx,
 			uint8_t *data, size_t data_length);
 int near_tag_add_records(struct near_tag *tag, GList *records,
@@ -86,6 +87,8 @@ enum near_tag_sub_type near_tag_get_subtype(uint32_t adapter_idx,
 					uint32_t target_idx);
 uint8_t *near_tag_get_nfcid(uint32_t adapter_idx, uint32_t target_idx,
 					uint8_t *nfcid_len);
+int near_tag_set_nfcid(uint32_t adapter_idx, uint32_t target_idx,
+					uint8_t *nfcid, size_t nfcid_len);
 uint8_t *near_tag_get_data(struct near_tag *tag, size_t *data_length);
 uint32_t near_tag_get_adapter_idx(struct near_tag *tag);
 uint32_t near_tag_get_target_idx(struct near_tag *tag);

@@ -39,10 +39,12 @@
 #include <near/device.h>
 #include <near/adapter.h>
 #include <near/tlv.h>
+#include <near/ndef.h>
 
 #include "p2p.h"
 
 static GSList *driver_list = NULL;
+static GList *server_list = NULL;
 
 struct p2p_data {
 	struct near_p2p_driver *driver;
@@ -115,6 +117,24 @@ static void free_client_data(gpointer data)
 	g_free(client_data);
 }
 
+static void free_server_data(gpointer data)
+{
+	struct p2p_data *server_data;
+
+	DBG("");
+
+	server_data = (struct p2p_data *)data;
+
+	if (server_data->watch > 0)
+		g_source_remove(server_data->watch);
+	server_data->watch = 0;
+	g_list_free_full(server_data->client_list, free_client_data);
+
+	DBG("Closing server socket");
+
+	close(server_data->fd);
+}
+
 static gboolean p2p_listener_event(GIOChannel *channel, GIOCondition condition,
 							gpointer user_data)
 {
@@ -127,19 +147,22 @@ static gboolean p2p_listener_event(GIOChannel *channel, GIOCondition condition,
 
 	DBG("condition 0x%x", condition);
 
+	server_fd = g_io_channel_unix_get_fd(channel);
+
 	if (condition & (G_IO_NVAL | G_IO_ERR | G_IO_HUP)) {
 		if (server_data->watch > 0)
 			g_source_remove(server_data->watch);
 		server_data->watch = 0;
 		g_list_free_full(server_data->client_list, free_client_data);
 
+		close(server_fd);
+
 		near_error("Error with %s server channel", driver->name);
 
-		return TRUE;
+		return FALSE;
 	}
 
-	server_fd = g_io_channel_unix_get_fd(channel);
-
+	client_addr_len = sizeof(client_addr);
 	client_fd = accept(server_fd, (struct sockaddr *)&client_addr,
 							&client_addr_len);
 	if (client_fd < 0) {
@@ -151,6 +174,7 @@ static gboolean p2p_listener_event(GIOChannel *channel, GIOCondition condition,
 
 	DBG("client dsap %d ssap %d",
 		client_addr.dsap, client_addr.ssap);
+	DBG("target idx %d", client_addr.target_idx);
 
 	client_data = g_try_malloc0(sizeof(struct p2p_data));
 	if (client_data == NULL) {
@@ -160,7 +184,7 @@ static gboolean p2p_listener_event(GIOChannel *channel, GIOCondition condition,
 
 	client_data->driver = server_data->driver;
 	client_data->adapter_idx = server_data->adapter_idx;
-	client_data->target_idx = server_data->target_idx;
+	client_data->target_idx = client_addr.target_idx;
 	client_data->fd = client_fd;
 	client_data->cb = server_data->cb;
 
@@ -178,7 +202,7 @@ static gboolean p2p_listener_event(GIOChannel *channel, GIOCondition condition,
 }
 
 static int p2p_bind(struct near_p2p_driver *driver, uint32_t adapter_idx,
-		uint32_t target_idx, near_device_io_cb cb)
+							near_device_io_cb cb)
 {
 	int err, fd;
 	struct sockaddr_nfc_llcp addr;
@@ -201,7 +225,12 @@ static int p2p_bind(struct near_p2p_driver *driver, uint32_t adapter_idx,
 	err = bind(fd, (struct sockaddr *)&addr,
 			sizeof(struct sockaddr_nfc_llcp));
 	if (err < 0) {
-		near_error("%s bind failed %d", driver->name, err);
+		if (errno == EADDRINUSE) {
+			DBG("%s is already bound", driver->name);
+			return 0;
+		}
+
+		near_error("%s bind failed %d %d", driver->name, err, errno);
 
 		close(fd);
 		return err;
@@ -223,7 +252,6 @@ static int p2p_bind(struct near_p2p_driver *driver, uint32_t adapter_idx,
 
 	server_data->driver = driver;
 	server_data->adapter_idx = adapter_idx;
-	server_data->target_idx = target_idx;
 	server_data->fd = fd;
 	server_data->cb = cb;
 
@@ -235,11 +263,12 @@ static int p2p_bind(struct near_p2p_driver *driver, uint32_t adapter_idx,
 				p2p_listener_event,
 				(gpointer) server_data);
 
+	server_list = g_list_append(server_list, server_data);
+
 	return 0;
 }
 
-static int p2p_listen(uint32_t adapter_idx,
-		uint32_t target_idx, near_device_io_cb cb)
+static int p2p_listen(uint32_t adapter_idx, near_device_io_cb cb)
 {
 	int err = 0;
 	GSList *list;
@@ -247,15 +276,74 @@ static int p2p_listen(uint32_t adapter_idx,
 	for (list = driver_list; list != NULL; list = list->next) {
 		struct near_p2p_driver *driver = list->data;
 
-		err &= p2p_bind(driver, adapter_idx, target_idx, cb);
+		err &= p2p_bind(driver, adapter_idx, cb);
 	}
 
 	return err;
 }
 
+static int p2p_connect(uint32_t adapter_idx, uint32_t target_idx,
+			struct near_ndef_message *ndef,
+			near_device_io_cb cb,  struct near_p2p_driver *driver)
+{
+	int fd, err = 0;
+	struct sockaddr_nfc_llcp addr;
+
+	DBG("");
+
+	fd = socket(AF_NFC, SOCK_STREAM, NFC_SOCKPROTO_LLCP);
+	if (fd < 0)
+		return -errno;
+
+	memset(&addr, 0, sizeof(struct sockaddr_nfc_llcp));
+	addr.sa_family = AF_NFC;
+	addr.dev_idx = adapter_idx;
+	addr.target_idx = target_idx;
+	addr.nfc_protocol = NFC_PROTO_NFC_DEP;
+	addr.service_name_len = strlen(driver->service_name);
+	strcpy(addr.service_name, driver->service_name);
+
+	err = connect(fd, (struct sockaddr *)&addr,
+			sizeof(struct sockaddr_nfc_llcp));
+	if (err < 0) {
+		near_error("Connect failed  %d", err);
+		close(fd);
+
+		return err;
+	}
+
+	return fd;
+}
+
+static int p2p_push(uint32_t adapter_idx, uint32_t target_idx,
+			struct near_ndef_message *ndef, char *service_name,
+			near_device_io_cb cb)
+{
+	int fd;
+	GSList *list;
+
+	DBG("");
+
+	for (list = driver_list; list != NULL; list = list->next) {
+		struct near_p2p_driver *driver = list->data;
+
+		if (strcmp(driver->service_name, service_name) != 0)
+			continue;
+
+		fd = p2p_connect(adapter_idx, target_idx, ndef, cb, driver);
+		if (fd < 0)
+			return fd;
+
+		return driver->push(fd, adapter_idx, target_idx, ndef, cb);
+	}
+
+	return -1;
+}
+
 static struct near_device_driver p2p_driver = {
 	.priority       = NEAR_DEVICE_PRIORITY_HIGH,
 	.listen         = p2p_listen,
+	.push		= p2p_push,
 };
 
 
@@ -289,6 +377,8 @@ static int p2p_init(void)
 static void p2p_exit(void)
 {
 	DBG("");
+
+	g_list_free_full(server_list, free_server_data);
 
 	snep_exit();
 	npp_exit();

@@ -48,6 +48,8 @@ struct near_device {
 
 	uint32_t n_records;
 	GList *records;
+
+	DBusMessage *push_msg; /* Push pending message */
 };
 
 static DBusConnection *connection = NULL;
@@ -168,14 +170,141 @@ static DBusMessage *set_property(DBusConnection *conn,
 	return g_dbus_create_reply(msg, DBUS_TYPE_INVALID);
 }
 
-static GDBusMethodTable device_methods[] = {
-	{ "GetProperties",     "",      "a{sv}", get_properties     },
-	{ "SetProperty",       "sv",    "",      set_property       },
+static void push_cb(uint32_t adapter_idx, uint32_t target_idx, int status)
+{
+	struct near_device *device;
+	DBusConnection *conn;
+	DBusMessage *reply;
+
+	DBG("Push status %d", status);
+
+	conn = near_dbus_get_connection();
+	device = near_device_get_device(adapter_idx, target_idx);
+
+	if (conn == NULL || device == NULL)
+		return;
+
+	if (status != 0) {
+		reply = __near_error_failed(device->push_msg, EINVAL);
+		if (reply != NULL)
+			g_dbus_send_message(conn, reply);
+	} else {
+		g_dbus_send_reply(conn, device->push_msg, DBUS_TYPE_INVALID);
+	}
+
+	dbus_message_unref(device->push_msg);
+	device->push_msg = NULL;
+}
+
+static char *sn_from_message(DBusMessage *msg)
+{
+	DBusMessageIter iter;
+	DBusMessageIter arr_iter;
+
+	DBG("");
+
+	dbus_message_iter_init(msg, &iter);
+	dbus_message_iter_recurse(&iter, &arr_iter);
+
+	while (dbus_message_iter_get_arg_type(&arr_iter) !=
+						DBUS_TYPE_INVALID) {
+		const char *key, *value;
+		DBusMessageIter ent_iter;
+		DBusMessageIter var_iter;
+
+		dbus_message_iter_recurse(&arr_iter, &ent_iter);
+		dbus_message_iter_get_basic(&ent_iter, &key);
+
+		if (g_strcmp0(key, "Type") != 0) {
+			dbus_message_iter_next(&arr_iter);
+			continue;
+		}
+
+		dbus_message_iter_next(&ent_iter);
+		dbus_message_iter_recurse(&ent_iter, &var_iter);
+
+		switch (dbus_message_iter_get_arg_type(&var_iter)) {
+		case DBUS_TYPE_STRING:
+			dbus_message_iter_get_basic(&var_iter, &value);
+
+			if (g_strcmp0(value, "Text") == 0)
+				return NEAR_DEVICE_SN_SNEP;
+			else if (g_strcmp0(value, "URI") == 0)
+				return NEAR_DEVICE_SN_SNEP;
+			else if (g_strcmp0(value, "SmartPoster") == 0)
+				return NEAR_DEVICE_SN_SNEP;
+			else if (g_strcmp0(value, "Handover") == 0)
+				return NEAR_DEVICE_SN_HANDOVER;
+		        else
+				return NULL;
+
+			break;
+		}
+
+		dbus_message_iter_next(&arr_iter);
+	}
+
+	return NULL;
+}
+
+static DBusMessage *push_ndef(DBusConnection *conn,
+				DBusMessage *msg, void *data)
+{
+	struct near_device *device = data;
+	struct near_ndef_message *ndef;
+	char *service_name;
+	int err;
+
+	DBG("conn %p", conn);
+
+	if (device->push_msg)
+		return __near_error_in_progress(msg);
+
+	device->push_msg = dbus_message_ref(msg);
+
+	service_name = sn_from_message(msg);
+	if (service_name == NULL) {
+		err = -EINVAL;
+		goto error;
+	}
+
+	ndef = __ndef_build_from_message(msg);
+	if (ndef == NULL) {
+		err = -EINVAL;
+		goto error;
+	}
+
+	err = __near_device_push(device, ndef, service_name, push_cb);
+	if (err < 0)
+		goto error;
+
+	g_free(ndef);
+	g_free(ndef->data);
+
+	return NULL;
+
+error:
+	dbus_message_unref(device->push_msg);
+	device->push_msg = NULL;
+
+	return __near_error_failed(msg, -err);
+}
+
+static const GDBusMethodTable device_methods[] = {
+	{ GDBUS_METHOD("GetProperties",
+				NULL, GDBUS_ARGS({"properties", "a{sv}"}),
+				get_properties) },
+	{ GDBUS_METHOD("SetProperty",
+				GDBUS_ARGS({"name", "s"}, {"value", "v"}),
+				NULL, set_property) },
+	{ GDBUS_ASYNC_METHOD("Push", GDBUS_ARGS({"attributes", "a{sv}"}),
+							NULL, push_ndef) },
 	{ },
 };
 
-static GDBusSignalTable device_signals[] = {
-	{ "PropertyChanged",		"sv"	},
+static const GDBusSignalTable device_signals[] = {
+	{ GDBUS_SIGNAL("PropertyChanged",
+				GDBUS_ARGS({"name", "s"}, {"value", "v"})) },
 	{ }
 };
 
@@ -256,7 +385,7 @@ struct near_device *__near_device_add(uint32_t adapter_idx, uint32_t target_idx,
 	device->target_idx = target_idx;
 	device->n_records = 0;
 
-	if (nfcid_len <= NFC_MAX_NFCID1_LEN) {
+	if (nfcid_len <= NFC_MAX_NFCID1_LEN && nfcid_len > 0) {
 		device->nfcid_len = nfcid_len;
 		memcpy(device->nfcid, nfcid, nfcid_len);
 	}
@@ -288,8 +417,25 @@ int __near_device_listen(struct near_device *device, near_device_io_cb cb)
 	for (list = driver_list; list; list = list->next) {
 		struct near_device_driver *driver = list->data;
 
-		return driver->listen(device->adapter_idx,
-						device->target_idx, cb);
+		return driver->listen(device->adapter_idx, cb);
+	}
+
+	return 0;
+}
+
+int __near_device_push(struct near_device *device,
+			struct near_ndef_message *ndef, char *service_name,
+			near_device_io_cb cb)
+{
+	GSList *list;
+
+	DBG("");
+
+	for (list = driver_list; list; list = list->next) {
+		struct near_device_driver *driver = list->data;
+
+		return driver->push(device->adapter_idx, device->target_idx,
+					ndef, service_name, cb);
 	}
 
 	return 0;
@@ -311,6 +457,8 @@ int near_device_driver_register(struct near_device_driver *driver)
 		return -EINVAL;
 
 	driver_list = g_slist_insert_sorted(driver_list, driver, cmp_prio);
+
+	__near_adapter_listen(driver);
 
 	return 0;
 }

@@ -30,6 +30,7 @@
 #include <near/types.h>
 
 struct near_adapter;
+struct near_device_driver;
 
 #include <near/log.h>
 
@@ -81,9 +82,12 @@ int __near_adapter_add_target(uint32_t idx, uint32_t target_idx,
 			uint32_t protocols, uint16_t sens_res, uint8_t sel_res,
 			uint8_t *nfcid, uint8_t nfcid_len);
 int __near_adapter_remove_target(uint32_t idx, uint32_t target_idx);
+int __near_adapter_add_device(uint32_t idx, uint8_t *nfcid, uint8_t nfcid_len);
+int __near_adapter_remove_device(uint32_t idx);
 int __near_adapter_set_dep_state(uint32_t idx, near_bool_t dep);
 void __near_adapter_tags_changed(uint32_t adapter_idx);
 void __near_adapter_devices_changed(uint32_t adapter_idx);
+void __near_adapter_listen(struct near_device_driver *driver);
 void __near_adapter_list(DBusMessageIter *iter, void *user_data);
 int __near_adapter_init(void);
 void __near_adapter_cleanup(void);
@@ -128,11 +132,15 @@ struct near_device *__near_device_add(uint32_t idx, uint32_t target_idx,
 					uint8_t *nfcid, uint8_t nfcid_len);
 void __near_device_remove(struct near_device *device);
 int __near_device_listen(struct near_device *device, near_device_io_cb cb);
+int __near_device_push(struct near_device *device,
+			struct near_ndef_message *ndef, char *service_name,
+			near_device_io_cb cb);
 
 #include <near/tlv.h>
 
 int __near_netlink_get_adapters(void);
-int __near_netlink_start_poll(int idx, uint32_t protocols);
+int __near_netlink_start_poll(int idx,
+			uint32_t im_protocols, uint32_t tm_protocols);
 int __near_netlink_stop_poll(int idx);
 int __near_netlink_dep_link_up(uint32_t idx, uint32_t target_idx,
 				uint8_t comm_mode, uint8_t rf_mode);
@@ -156,7 +164,17 @@ void __near_plugin_cleanup(void);
 /* NFC Bluetooth Secure Simple Pairing */
 #define BT_MIME_V2_0		0
 #define BT_MIME_V2_1		1
+#define BT_MIME_STRING_2_0	"nokia.com:bt"
+#define BT_MIME_STRING_2_1	"application/vnd.bluetooth.ep.oob"
 
 int __near_bluetooth_init(void);
 void __near_bluetooth_cleanup(void);
-int __near_bt_parse_oob_record(uint8_t version, uint8_t *bt_data);
+int __near_bluetooth_parse_oob_record(uint8_t version, uint8_t *bt_data,
+							near_bool_t pair);
+int __near_bluetooth_pair(void *data);
+uint8_t *__near_bluetooth_local_get_properties(int *bt_data_len);
+
+int __near_handover_agent_register(const char *sender, const char *path);
+int __near_handover_agent_unregister(const char *sender, const char *path);
+int __near_handover_init(void);
+void __near_handover_cleanup(void);

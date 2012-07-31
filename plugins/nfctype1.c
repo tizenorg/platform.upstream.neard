@@ -41,6 +41,7 @@
 
 #define CMD_READ_ALL		0x00	/* Read seg 0 (incl: HR) */
 #define CMD_READ_SEGS		0x10	/* Read 16 blocks (128 bytes) */
+#define CMD_RID			0x78	/* Read tag UID */
 
 #define CMD_WRITE_E		0x53	/* Write with erase */
 #define CMD_WRITE_NE		0x1A	/* Write no erase */
@@ -61,6 +62,7 @@
 
 #define TYPE1_MAGIC 0xe1
 
+#define TAG_T1_DATA_UID(data) ((data) + LEN_SPEC_BYTES)
 #define TAG_T1_DATA_CC(data) ((data) + LEN_SPEC_BYTES + LEN_UID_BYTES)
 #define TAG_T1_DATA_LENGTH(cc) ((cc[2] + 1) * 8 - LEN_CC_BYTES)
 
@@ -72,10 +74,13 @@
 
 #define TYPE1_STATIC_MAX_DATA_SIZE	0x60
 
+#define UID_LENGTH 4
+
 struct type1_cmd {
 	uint8_t cmd;
 	uint8_t addr;
 	uint8_t data[1];
+	uint8_t uid[UID_LENGTH];
 } __attribute__((packed));
 
 struct type1_tag {
@@ -84,6 +89,7 @@ struct type1_tag {
 	uint16_t current_seg;
 	uint16_t last_seg;
 	uint16_t data_read;
+	uint8_t uid[UID_LENGTH];
 
 	near_tag_io_cb cb;
 	struct near_tag *tag;
@@ -92,11 +98,20 @@ struct type1_tag {
 struct t1_cookie {
 	uint32_t adapter_idx;
 	uint32_t target_idx;
+	uint8_t uid[UID_LENGTH];
 	uint32_t current_block; /* Static tag */
 	uint32_t current_byte;  /* Static tag */
 	struct near_ndef_message *ndef;
 	near_tag_io_cb cb;
 };
+
+static void t1_init_cmd(struct type1_tag *tag, struct type1_cmd *cmd)
+{
+	if (tag == NULL || cmd == NULL)
+		return;
+
+	memcpy(cmd->uid, tag->uid, UID_LENGTH);
+}
 
 static void t1_cookie_release(struct t1_cookie *cookie)
 {
@@ -140,6 +155,8 @@ static int segment_read_recv(uint8_t *resp, int length, void *data)
 
 	if (t1_tag->current_seg <= t1_tag->last_seg) {
 		/* RSEG cmd */
+		t1_init_cmd(t1_tag, &t1_cmd);
+
 		t1_cmd.cmd = CMD_READ_SEGS;
 		t1_cmd.addr = (t1_tag->current_seg << 4) & 0xFF;
 
@@ -200,6 +217,8 @@ static int read_dynamic_tag(uint8_t *cc, int length, void *data)
 	t1_tag->last_seg = ((cc[2] * BLOCK_SIZE) / TAG_T1_SEGMENT_SIZE);
 	t1_tag->data_read = 10 * BLOCK_SIZE + 2;
 
+	t1_init_cmd(t1_tag, &t1_cmd);
+
 	/* T1 read segment */
 	t1_cmd.cmd = CMD_READ_SEGS;
 	/* 5.3.3 ADDS operand is [b8..b5] */
@@ -259,11 +278,10 @@ static int meta_recv(uint8_t *resp, int length, void *data)
 		goto out_err;
 	}
 
-	DBG("2");
-
 	t1_tag->adapter_idx = cookie->adapter_idx;
 	t1_tag->cb = cookie->cb;
 	t1_tag->tag = tag;
+	memcpy(t1_tag->uid, cookie->uid, UID_LENGTH);
 
 	/*s Set the ReadWrite flag */
 	if (TAG_T1_WRITE_FLAG(cc) == TYPE1_NOWRITE_ACCESS)
@@ -305,30 +323,105 @@ out_err:
 
 	t1_cookie_release(cookie);
 
+	return err;
+}
 
+/*
+ * READALL to read a maximum of 124 bytes.
+ * This cmd is common to static and dynamic targets
+ * This should allow to get the HR0 byte.
+ */
+static int rid_resp(uint8_t *resp, int length, void *data)
+{
+	struct t1_cookie *cookie = data;
+	struct type1_cmd t1_cmd;
+	uint8_t *uid;
+	int err;
+
+	DBG("");
+
+	/* First byte is cmd status */
+	if (resp[OFFSET_STATUS_CMD] != 0) {
+		DBG("Command failed: 0x%x",resp[OFFSET_STATUS_CMD]);
+		err = -EIO;
+		goto out_err;
+	}
+
+	uid = TAG_T1_DATA_UID(resp);
+
+	DBG("UID 0x%x 0x%x 0x%x 0x%x", uid[0], uid[1], uid[2], uid[3]);
+
+	near_tag_set_nfcid(cookie->adapter_idx, cookie->target_idx,
+							uid, UID_LENGTH);
+
+	t1_cmd.cmd = CMD_READ_ALL;     /* Read ALL cmd give 124 bytes */
+	t1_cmd.addr = 0;	       /* NA */
+	t1_cmd.data[0] = 0;
+	memcpy(t1_cmd.uid, uid, UID_LENGTH);
+
+	memcpy(cookie->uid, uid, UID_LENGTH);
+
+	return near_adapter_send(cookie->adapter_idx,
+				(uint8_t *)&t1_cmd, sizeof(t1_cmd),
+				meta_recv, cookie);
+
+out_err:
+	DBG("err %d", err);
+
+	if (err < 0 && cookie->cb)
+		cookie->cb(cookie->adapter_idx, cookie->target_idx, err);
+
+	t1_cookie_release(cookie);
 
 	return err;
 }
 
-/* First step: READALL to read a maximum of 124 bytes
- * This cmd is common to static and dynamic targets
- * This should allow to get the HR0 byte
- */
+/* First step: RID to get the tag UID */
 static int nfctype1_read(uint32_t adapter_idx,
 				uint32_t target_idx, near_tag_io_cb cb)
 {
 	struct type1_cmd t1_cmd;
 	struct t1_cookie *cookie;
+	uint8_t *uid, uid_length;
 
 	DBG("");
 
+	uid = near_tag_get_nfcid(adapter_idx, target_idx, &uid_length);
+	if (uid == NULL || uid_length != UID_LENGTH) {
+		if (uid != NULL && uid_length != UID_LENGTH) {
+			near_error("Invalid UID");
+
+			g_free(uid);
+			return -EINVAL;
+		}
+
+		t1_cmd.cmd = CMD_RID;
+		t1_cmd.addr = 0;
+		t1_cmd.data[0] = 0;
+		memset(t1_cmd.uid, 0, UID_LENGTH);
+
+		cookie = g_try_malloc0(sizeof(struct t1_cookie));
+		cookie->adapter_idx = adapter_idx;
+		cookie->target_idx = target_idx;
+		cookie->cb = cb;
+
+		return near_adapter_send(adapter_idx,
+					(uint8_t *)&t1_cmd, sizeof(t1_cmd),
+					rid_resp, cookie);
+	}
+
 	t1_cmd.cmd = CMD_READ_ALL;     /* Read ALL cmd give 124 bytes */
 	t1_cmd.addr = 0;	       /* NA */
+	t1_cmd.data[0] = 0;
+	memcpy(t1_cmd.uid, uid, UID_LENGTH);
 
 	cookie = g_try_malloc0(sizeof(struct t1_cookie));
 	cookie->adapter_idx = adapter_idx;
 	cookie->target_idx = target_idx;
+	memcpy(cookie->uid, uid, UID_LENGTH);
 	cookie->cb = cb;
+
+	g_free(uid);
 
 	return near_adapter_send(adapter_idx, (uint8_t *)&t1_cmd, sizeof(t1_cmd),
 							meta_recv, cookie);
@@ -366,6 +459,7 @@ static int write_nmn_e1(struct t1_cookie *cookie)
 	cmd.cmd = CMD_WRITE_E;
 	cmd.addr = 0x08;
 	cmd.data[0] = TYPE1_MAGIC;
+	memcpy(cmd.uid, cookie->uid, UID_LENGTH);
 
 	return near_adapter_send(cookie->adapter_idx, (uint8_t *)&cmd,
 					sizeof(cmd), write_nmn_e1_resp, cookie);
@@ -402,6 +496,7 @@ static int data_write(uint8_t *resp, int length, void *data)
 	addr = cookie->current_block << 3;
 	cmd.addr = addr | (cookie->current_byte & 0x7);
 	cmd.data[0] = cookie->ndef->data[cookie->ndef->offset];
+	memcpy(cmd.uid, cookie->uid, UID_LENGTH);
 	cookie->ndef->offset++;
 	cookie->current_byte++;
 
@@ -427,25 +522,37 @@ static int write_nmn_0(uint32_t adapter_idx, uint32_t target_idx,
 	int err;
 	struct type1_cmd cmd;
 	struct t1_cookie *cookie;
+	uint8_t *uid, uid_length;
 
 	DBG("");
+
+	uid = near_tag_get_nfcid(adapter_idx, target_idx, &uid_length);
+	if (uid == NULL || uid_length != UID_LENGTH) {
+		near_error("Invalid type 1 UID");
+		return -EINVAL;
+	}
 
 	cmd.cmd  = CMD_WRITE_E;
 	cmd.addr = 0x08;
 	cmd.data[0] = 0x00;
+	memcpy(cmd.uid, uid, UID_LENGTH);
 
 	cookie = g_try_malloc0(sizeof(struct t1_cookie));
 	if (cookie == NULL) {
+		g_free(uid);
 		err = -ENOMEM;
 		return err;
 	}
 
 	cookie->adapter_idx = adapter_idx;
 	cookie->target_idx = target_idx;
+	memcpy(cookie->uid, uid, UID_LENGTH);
 	cookie->current_block = 1;
 	cookie->current_byte = LEN_CC_BYTES;
 	cookie->ndef = ndef;
 	cookie->cb = cb;
+
+	g_free(uid);
 
 	err = near_adapter_send(cookie->adapter_idx, (uint8_t *)&cmd,
 					sizeof(cmd), data_write, cookie);
@@ -485,11 +592,6 @@ static int nfctype1_write(uint32_t adapter_idx, uint32_t target_idx,
 	if (tag == NULL)
 		return -EINVAL;
 
-	if (near_tag_get_ro(tag) == TRUE) {
-		DBG("tag is read-only");
-		return -EPERM;
-	}
-
 	/* This check is valid for only static tags.
 	 * Max data length on Type 2 Tag including TLV's
 	 * is TYPE1_STATIC_MAX_DATA_SIZE */
@@ -527,12 +629,23 @@ static int nfctype1_check_presence(uint32_t adapter_idx,
 {
 	struct type1_cmd t1_cmd;
 	struct t1_cookie *cookie;
+	uint8_t *uid, uid_length;
 	int err;
 
 	DBG("");
 
+	uid = near_tag_get_nfcid(adapter_idx, target_idx, &uid_length);
+	if (uid == NULL || uid_length != UID_LENGTH) {
+		near_error("Invalid type 1 UID");
+		return -EINVAL;
+	}
+
 	t1_cmd.cmd = CMD_READ_ALL;     /* Read ALL cmd give 124 bytes */
 	t1_cmd.addr = 0;	       /* NA */
+	t1_cmd.data[0] = 0;
+	memcpy(t1_cmd.uid, uid, UID_LENGTH);
+
+	g_free(uid);
 
 	cookie = g_try_malloc0(sizeof(struct t1_cookie));
 	if (cookie == NULL)
