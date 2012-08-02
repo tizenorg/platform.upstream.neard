@@ -32,7 +32,7 @@ Summary:    Test Scripts for NFC Manager
 Group:      Development/Tools  
 Requires:   %{name} = %{version}-%{release}  
 Requires:   dbus-python  
-Requires:   pygobject2  
+Requires:   pygobject
   
 %description test  
 Scripts for testing neard and its functionality  
