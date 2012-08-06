@@ -1,0 +1,11 @@
+[Unit]
+Description=NFC Manager Daemon
+Before=network.target
+
+[Service]
+Type=dbus
+BusName=org.neard
+ExecStart=/usr/libexec/neard -n
+
+[Install]
+WantedBy=multi-user.target
