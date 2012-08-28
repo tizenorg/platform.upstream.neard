@@ -2,7 +2,7 @@
 %define kernel_target adaptation-bb
 Name:       neard
 Summary:    Near Field Communication Manager
-Version:    0.5
+Version:    0.6
 Release:    1
 Group:      System/Networking
 License:    TOBE/FILLED

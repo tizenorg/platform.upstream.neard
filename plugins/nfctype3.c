@@ -92,6 +92,22 @@
 
 #define MAX_DATA_SIZE	254
 
+#define NDEF_MAPPING_VERSION	0x10
+#define MAX_READ_BLOCKS_PER_CHECK	0x04
+#define MAX_WRITE_BLOCKS_PER_UPDATE	0x01
+#define MAX_BLOCKS_FOR_NDEF_DATA	0x000D
+#define ATTR_BLOCK_WRITE_FLAG	0x00
+#define ATTR_BLOCK_RW_FLAG	0x01
+
+#define IC_TYPE_OFFSET	12
+#define SYSTEM_OPTION_OFFSET	17
+#define FELICA_LITE_MC_BLOCK	0x88
+#define FELICA_LITE_IC_TYPE	0xF0
+#define FELICA_LITE_S_IC_TYPE	0xF1
+#define FELICA_PLUG_IC_TYPE	0xE0
+
+#define FELICA_LITE_AND_LITE_S_SYS_CODE	0x88B4
+
 struct type3_cmd {
 	uint8_t len;
 	uint8_t cmd;
@@ -115,6 +131,8 @@ struct t3_cookie {
 	uint8_t current_block;
 	uint8_t attr[BLOCK_SIZE];
 	struct near_ndef_message *ndef;
+	uint8_t ic_type;
+	uint8_t mc_block[BLOCK_SIZE];
 };
 
 static void t3_cookie_release(struct t3_cookie *cookie)
@@ -130,7 +148,7 @@ static void t3_cookie_release(struct t3_cookie *cookie)
 	cookie = NULL;
 }
 
-/* common: Intialize structure to write block */
+/* common: Initialize structure to write block */
 static void prepare_write_block(uint8_t *UID, struct type3_cmd *cmd,
 					uint8_t block, uint8_t *data)
 {
@@ -147,7 +165,6 @@ static void prepare_write_block(uint8_t *UID, struct type3_cmd *cmd,
 	memcpy(cmd->data + LEN_ID + 6, data, BLOCK_SIZE); /* data to write */
 
 	cmd->len = LEN_ID + LEN_CMD + LEN_CMD_LEN + 6 + BLOCK_SIZE;
-
 }
 
 /* common: Initialize structure to read block */
@@ -332,6 +349,8 @@ static int nfctype3_recv_block_0(uint8_t *resp, int length, void *data)
 
 	near_tag_set_idm(tag, cookie->IDm, LEN_ID);
 	near_tag_set_attr_block(tag, resp + OFS_READ_DATA, BLOCK_SIZE);
+	near_tag_set_blank(tag, FALSE);
+	near_tag_set_ic_type(tag, cookie->ic_type);
 
 	t3_tag->adapter_idx = cookie->adapter_idx;
 	t3_tag->cb = cookie->cb;
@@ -340,8 +359,11 @@ static int nfctype3_recv_block_0(uint8_t *resp, int length, void *data)
 	err = nfctype3_data_read(t3_tag);
 
 out:
-	if (err < 0 && cookie->cb) {
-		cookie->cb(cookie->adapter_idx, cookie->target_idx, err);
+	if (err < 0) {
+		if (cookie->cb)
+			cookie->cb(cookie->adapter_idx, cookie->target_idx,
+									err);
+
 		g_free(t3_tag);
 	}
 
@@ -350,10 +372,9 @@ out:
 	return err;
 }
 
-static int nfctype3_recv_UID(uint8_t *resp, int length, void *data)
+static int poll_ndef_system_code(uint8_t *resp, int length, void *data)
 {
-	struct t3_cookie *rcv_cookie = data;
-	struct t3_cookie *snd_cookie;
+	struct t3_cookie *cookie = data;
 	int err = 0;
 	struct type3_cmd cmd;
 
@@ -368,24 +389,154 @@ static int nfctype3_recv_UID(uint8_t *resp, int length, void *data)
 	if (err < 0)
 		goto out;
 
-	snd_cookie = g_try_malloc0(sizeof(struct t3_cookie));
-	snd_cookie->adapter_idx = rcv_cookie->adapter_idx;
-	snd_cookie->target_idx = rcv_cookie->target_idx;
-	snd_cookie->cb = rcv_cookie->cb;
+	prepare_read_block(META_BLOCK_START, cookie->IDm, &cmd);
 
-	memcpy(snd_cookie->IDm, resp + OFS_IDM, LEN_ID);
+	err = near_adapter_send(cookie->adapter_idx, (uint8_t *)&cmd,
+				cmd.len, nfctype3_recv_block_0, cookie);
+	if (err < 0)
+		goto out;
 
-	prepare_read_block(META_BLOCK_START, snd_cookie->IDm, &cmd);
-
-	err = near_adapter_send(snd_cookie->adapter_idx,
-			(uint8_t *)&cmd, cmd.len, nfctype3_recv_block_0, snd_cookie);
+	return 0;
 
 out:
-	if (err < 0 && rcv_cookie->cb)
-		rcv_cookie->cb(rcv_cookie->adapter_idx,
-				rcv_cookie->target_idx, err);
+	if (err < 0 && cookie->cb)
+		cookie->cb(cookie->adapter_idx,
+				cookie->target_idx, err);
 
-	t3_cookie_release(rcv_cookie);
+	t3_cookie_release(cookie);
+
+	return err;
+}
+
+static int check_sys_op_in_mc_block(uint8_t *resp, int length, void *data)
+{
+	struct type3_cmd cmd;
+	struct near_tag *tag;
+	struct t3_cookie *cookie = data;
+	int err = 0;
+
+	DBG("length %d", length);
+
+	if (length < 0) {
+		err = -EIO;
+		goto out;
+	}
+
+	err = check_recv_frame(resp, RESP_READ_WO_ENCRYPT);
+	if (err < 0)
+		goto out;
+
+	if (resp[SYSTEM_OPTION_OFFSET] == 0x00) {
+		DBG("Blank tag detected");
+
+		err = near_tag_add_data(cookie->adapter_idx,
+					cookie->target_idx,
+					NULL, 1 /* dummy length */);
+		if (err < 0)
+			goto out;
+
+		tag = near_tag_get_tag(cookie->adapter_idx,
+					cookie->target_idx);
+		if (tag == NULL) {
+			err = -ENOMEM;
+			goto out;
+		}
+
+		near_tag_set_idm(tag, cookie->IDm, LEN_ID);
+		near_tag_set_ic_type(tag, cookie->ic_type);
+		near_tag_set_blank(tag, TRUE);
+
+		if (cookie->cb)
+			cookie->cb(cookie->adapter_idx,
+					cookie->target_idx, 0);
+
+		t3_cookie_release(cookie);
+
+		return 0;
+	} else {
+		/* CMD POLL */
+		cmd.cmd	 = CMD_POLL;	/* POLL command */
+		cmd.data[0] = 0x12;     /* System code (NFC SC) */
+		cmd.data[1] = 0xFC;
+		cmd.data[2] = 01;	/* request code */
+		cmd.data[3] = 0x00;	/* time slot */
+		/* data len + 2 bytes */
+		cmd.len = LEN_CMD + LEN_CMD_LEN + 4 ;
+
+		err = near_adapter_send(cookie->adapter_idx, (uint8_t *)&cmd,
+			cmd.len , poll_ndef_system_code, cookie);
+	}
+
+	if (err < 0)
+		goto out;
+
+	return 0;
+
+out:
+	if (err < 0 && cookie->cb)
+		cookie->cb(cookie->adapter_idx, cookie->target_idx, err);
+
+	t3_cookie_release(cookie);
+
+	return err;
+}
+
+static int receive_system_code(uint8_t *resp, int length, void *data)
+{
+	struct t3_cookie *cookie = data;
+	int err = 0;
+	struct type3_cmd cmd;
+	uint16_t system_code;
+
+	DBG(" length: %d", length);
+
+	if (length < 0) {
+		err = -EIO;
+		goto out;
+	}
+
+	err = check_recv_frame(resp, RESP_POLL);
+	if (err < 0)
+		goto out;
+
+	cookie->ic_type = resp[IC_TYPE_OFFSET];
+	memcpy(cookie->IDm, resp + OFS_IDM, LEN_ID);
+	system_code = ((uint16_t)(resp[length - 2])) << 8;
+	system_code |= resp[length - 1];
+
+	switch (resp[IC_TYPE_OFFSET]) {
+	case FELICA_LITE_IC_TYPE:
+		prepare_read_block(FELICA_LITE_MC_BLOCK, cookie->IDm, &cmd);
+		err = near_adapter_send(cookie->adapter_idx, (uint8_t *)&cmd,
+					cmd.len, check_sys_op_in_mc_block,
+					cookie);
+		break;
+
+	case FELICA_LITE_S_IC_TYPE:
+	case FELICA_PLUG_IC_TYPE:
+		/* CMD POLL */
+		cmd.cmd	 = CMD_POLL;	/* POLL command */
+		cmd.data[0] = 0x12;     /* System code (NFC SC) */
+		cmd.data[1] = 0xFC;
+		cmd.data[2] = 01;	/* request code */
+		cmd.data[3] = 0x00;	/* time slot */
+		/* data len + 2 bytes */
+		cmd.len = LEN_CMD + LEN_CMD_LEN + 4 ;
+
+		err = near_adapter_send(cookie->adapter_idx, (uint8_t *)&cmd,
+					cmd.len, poll_ndef_system_code, cookie);
+	}
+
+	if (err < 0)
+		goto out;
+
+	return 0;
+
+out:
+	if (err < 0 && cookie->cb)
+		cookie->cb(cookie->adapter_idx, cookie->target_idx, err);
+
+	t3_cookie_release(cookie);
 
 	return err;
 }
@@ -395,13 +546,14 @@ static int nfctype3_read(uint32_t adapter_idx,
 {
 	struct type3_cmd cmd;
 	struct t3_cookie *cookie;
+	int err;
 
 	DBG("");
 
 	/* CMD POLL */
 	cmd.cmd	 = CMD_POLL;	/* POLL command */
-	cmd.data[0] = 0x12;     /* System code (NFC SC) */
-	cmd.data[1] = 0xFC;
+	cmd.data[0] = 0xFF;     /* System code */
+	cmd.data[1] = 0xFF;
 	cmd.data[2] = 01;	/* request code */
 	cmd.data[3] = 0x00;	/* time slot */
 
@@ -409,12 +561,19 @@ static int nfctype3_read(uint32_t adapter_idx,
 	cmd.len = LEN_CMD + LEN_CMD_LEN + 4 ;
 
 	cookie = g_try_malloc0(sizeof(struct t3_cookie));
+	if (cookie == NULL)
+		return -ENOMEM;
+
 	cookie->adapter_idx = adapter_idx;
 	cookie->target_idx = target_idx;
 	cookie->cb = cb;
 
-	return near_adapter_send(adapter_idx, (uint8_t *)&cmd,
-			cmd.len , nfctype3_recv_UID, cookie);
+	err = near_adapter_send(adapter_idx, (uint8_t *)&cmd,
+				cmd.len , receive_system_code, cookie);
+	if (err < 0)
+		g_free(cookie);
+
+	return err;
 }
 
 static int update_attr_block_cb(uint8_t *resp, int length, void *data)
@@ -649,8 +808,8 @@ static int nfctype3_check_presence(uint32_t adapter_idx,
 
 	/* CMD POLL */
 	cmd.cmd	 = CMD_POLL;	/* POLL command */
-	cmd.data[0] = 0x12;     /* System code (NFC SC) */
-	cmd.data[1] = 0xFC;
+	cmd.data[0] = 0xFF;     /* System code */
+	cmd.data[1] = 0xFF;
 	cmd.data[2] = 01;	/* request code */
 	cmd.data[3] = 0x00;	/* time slot */
 
@@ -678,11 +837,207 @@ out:
 	return err;
 }
 
+static int format_resp(uint8_t *resp, int length, void *data)
+{
+	struct near_tag *tag;
+	struct t3_cookie *cookie = data;
+	int err;
+
+	DBG("");
+
+	if (length < 0) {
+		err = -EIO;
+		goto out;
+	}
+
+	err = check_recv_frame(resp, RESP_WRITE_WO_ENCRYPT);
+	if (err < 0)
+		goto out;
+
+	tag = near_tag_get_tag(cookie->adapter_idx, cookie->target_idx);
+	if (tag == NULL) {
+		err = -ENOMEM;
+		goto out;
+	}
+
+	near_tag_set_ro(tag, FALSE);
+	near_tag_set_idm(tag, cookie->IDm, LEN_ID);
+	near_tag_set_attr_block(tag, cookie->attr, BLOCK_SIZE);
+	near_tag_set_blank(tag, FALSE);
+
+	DBG("Formatting is done");
+
+out:
+	if (cookie->cb)
+		cookie->cb(cookie->adapter_idx, cookie->target_idx, err);
+
+	t3_cookie_release(cookie);
+
+	return err;
+}
+
+static int write_attr_block(uint8_t *resp, int length , void *data)
+{
+	struct type3_cmd cmd;
+	struct t3_cookie *cookie = data;
+	int err, i;
+	uint16_t checksum = 0;
+
+	DBG("length %d", length);
+
+	if (length < 0) {
+		err = -EIO;
+		goto out;
+	}
+
+	err = check_recv_frame(resp, RESP_WRITE_WO_ENCRYPT);
+	if (err < 0)
+		goto out;
+
+	cookie->attr[0] = NDEF_MAPPING_VERSION;
+	cookie->attr[1] = MAX_READ_BLOCKS_PER_CHECK;
+	cookie->attr[2] = MAX_WRITE_BLOCKS_PER_UPDATE;
+	cookie->attr[3] = (uint8_t) (MAX_BLOCKS_FOR_NDEF_DATA >> 8);
+	cookie->attr[4] = (uint8_t) (MAX_BLOCKS_FOR_NDEF_DATA);
+	cookie->attr[5] = 0;
+	cookie->attr[6] = 0;
+	cookie->attr[7] = 0;
+	cookie->attr[8] = 0;
+	cookie->attr[9] = ATTR_BLOCK_WRITE_FLAG;
+	cookie->attr[10] = ATTR_BLOCK_RW_FLAG;
+	cookie->attr[11] = 0;
+	cookie->attr[12] = 0;
+	cookie->attr[13] = 0;
+
+	for (i = 0; i < (BLOCK_SIZE - CHECKSUM_LEN); i++)
+		checksum += cookie->attr[i];
+
+	cookie->attr[14] = (uint8_t) (checksum >> 8);
+	cookie->attr[15] = (uint8_t) checksum;
+
+	prepare_write_block(cookie->IDm, &cmd, META_BLOCK_START,
+						cookie->attr);
+
+	err = near_adapter_send(cookie->adapter_idx, (uint8_t *)&cmd,
+				cmd.len, format_resp, cookie);
+	if (err < 0)
+		goto out;
+
+	return 0;
+
+out:
+	if (err < 0 && cookie->cb)
+		cookie->cb(cookie->adapter_idx, cookie->target_idx, err);
+
+	t3_cookie_release(cookie);
+
+	return err;
+}
+
+static int write_mc_block(uint8_t *resp, int length, void *data)
+{
+	struct type3_cmd cmd;
+	struct t3_cookie *cookie = data;
+	int err;
+
+	DBG("length %d", length);
+
+	if (length < 0) {
+		err = -EIO;
+		goto out;
+	}
+
+	err = check_recv_frame(resp, RESP_READ_WO_ENCRYPT);
+	if (err < 0)
+		goto out;
+
+	if (resp[OFS_READ_FLAG] != 0) {
+		DBG("Status 0x%x", resp[OFS_READ_FLAG]);
+		err = -EIO;
+		goto out;
+	}
+
+	memcpy(cookie->mc_block, resp + 14, BLOCK_SIZE);
+	/*
+	 * By updating Byte3 to 01h means making Felica Lite
+	 * compatible with NDEF.
+	 */
+	cookie->mc_block[3] = 1;
+	prepare_write_block(cookie->IDm, &cmd, FELICA_LITE_MC_BLOCK,
+				cookie->mc_block);
+	err = near_adapter_send(cookie->adapter_idx, (uint8_t *)&cmd,
+				cmd.len, write_attr_block, cookie);
+	if (err < 0)
+		goto out;
+
+	return 0;
+
+out:
+	if (err < 0 && cookie->cb)
+		cookie->cb(cookie->adapter_idx, cookie->target_idx, err);
+
+	t3_cookie_release(cookie);
+
+	return err;
+}
+
+static int nfctype3_format(uint32_t adapter_idx,
+				uint32_t target_idx, near_tag_io_cb cb)
+{
+	struct type3_cmd cmd;
+	struct near_tag *tag;
+	struct t3_cookie *cookie;
+	uint8_t ic_type;
+	uint8_t *idm, len;
+	int err;
+
+	DBG("");
+
+	tag = near_tag_get_tag(adapter_idx, target_idx);
+	if (tag == NULL)
+		return -ENOMEM;
+
+	ic_type = near_tag_get_ic_type(tag);
+	if (ic_type != FELICA_LITE_IC_TYPE)
+		return -EOPNOTSUPP;
+
+	cookie = g_try_malloc0(sizeof(struct t3_cookie));
+	if (cookie == NULL)
+		return -ENOMEM;
+
+	cookie->adapter_idx = adapter_idx;
+	cookie->target_idx = target_idx;
+	cookie->cb = cb;
+	cookie->ic_type = ic_type;
+
+	idm = near_tag_get_idm(tag, &len);
+	if (idm == NULL) {
+		err = -EINVAL;
+		goto out;
+	}
+
+	memcpy(cookie->IDm, idm, len);
+
+	prepare_read_block(FELICA_LITE_MC_BLOCK, cookie->IDm, &cmd);
+	err = near_adapter_send(cookie->adapter_idx, (uint8_t *)&cmd,
+				cmd.len, write_mc_block, cookie);
+	if (err < 0)
+		goto out;
+
+	return 0;
+
+out:
+	t3_cookie_release(cookie);
+
+	return err;
+}
+
 static struct near_tag_driver type1_driver = {
 	.type           = NFC_PROTO_FELICA,
 	.priority       = NEAR_TAG_PRIORITY_DEFAULT,
 	.read           = nfctype3_read,
 	.write          = nfctype3_write,
+	.format		= nfctype3_format,
 	.check_presence = nfctype3_check_presence,
 };
 
@@ -702,4 +1057,3 @@ static void nfctype3_exit(void)
 
 NEAR_PLUGIN_DEFINE(nfctype3, "NFC Forum Type 3 tags support", VERSION,
 			NEAR_PLUGIN_PRIORITY_HIGH, nfctype3_init, nfctype3_exit)
-

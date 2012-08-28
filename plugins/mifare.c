@@ -382,7 +382,7 @@ static int mifare_read_NFC_loop(uint8_t *resp, int length, void *data)
 	mf_ck->nfc_data_length = mf_ck->nfc_data_length - length;
 
 
-	/* Addtionnal sectors to read ? */;
+	/* Additional sectors to read ? */;
 	if (mf_ck->g_sect_list->next != NULL) {
 
 		err = mifare_read_sector(data,	/* cookie */
@@ -619,7 +619,6 @@ out_err:
 	return mifare_release(err, mf_ck);
 }
 
-
 /* MIFARE: entry point:
  * Read all the MAD sectors (0x00, 0x10) to get the Application Directory
  * entries.
@@ -647,6 +646,8 @@ int mifare_read(uint32_t adapter_idx, uint32_t target_idx,
 
 	/* Alloc global cookie */
 	cookie = g_try_malloc0(sizeof(struct mifare_cookie));
+	if (cookie == NULL)
+		return -ENOMEM;
 
 	/* Get the nfcid1 */
 	cookie->nfcid1 = near_tag_get_nfcid(adapter_idx, target_idx,
@@ -664,7 +665,6 @@ int mifare_read(uint32_t adapter_idx, uint32_t target_idx,
 				cookie);		/* target data */
 	if (err < 0)
 		return mifare_release(err, cookie);
-
 
 	return 0;
 }

@@ -268,19 +268,27 @@ static int nfctype2_read_meta(uint32_t adapter_idx, uint32_t target_idx,
 {
 	struct type2_cmd cmd;
 	struct t2_cookie *cookie;
-	
+	int err;
+
 	DBG("");
 
 	cmd.cmd = CMD_READ;
 	cmd.block = META_BLOCK_START;
 
 	cookie = g_try_malloc0(sizeof(struct t2_cookie));
+	if (cookie == NULL)
+		return -ENOMEM;
+
 	cookie->adapter_idx = adapter_idx;
 	cookie->target_idx = target_idx;
 	cookie->cb = cb;
 
-	return near_adapter_send(adapter_idx, (uint8_t *)&cmd, CMD_READ_SIZE,
+	err = near_adapter_send(adapter_idx, (uint8_t *)&cmd, CMD_READ_SIZE,
 							meta_recv, cookie);
+	if (err < 0)
+		g_free(cookie);
+
+	return err;
 }
 
 static int nfctype2_read(uint32_t adapter_idx,
@@ -382,6 +390,9 @@ static int data_write(uint32_t adapter_idx, uint32_t target_idx,
 	DBG("");
 
 	cookie = g_try_malloc0(sizeof(struct t2_cookie));
+	if (cookie == NULL)
+		return -ENOMEM;
+
 	cookie->adapter_idx = adapter_idx;
 	cookie->target_idx = target_idx;
 	cookie->current_block = DATA_BLOCK_START;
@@ -552,13 +563,19 @@ static int nfctype2_format(uint32_t adapter_idx, uint32_t target_idx,
 	}
 
 	t2_cc = g_try_malloc0(sizeof(struct type2_cc));
+	cc_ndef = g_try_malloc0(sizeof(struct near_ndef_message));
+	cookie = g_try_malloc0(sizeof(struct t2_cookie));
+
+	if (t2_cc == NULL || cc_ndef == NULL || cookie == NULL) {
+		err = -ENOMEM;
+		goto out;
+	}
+
 	t2_cc->magic = TYPE2_MAGIC;
 	t2_cc->version = TYPE2_TAG_VER_1_0;
 	t2_cc->mem_size = TYPE2_DATA_SIZE_48;
 	t2_cc->read_write = TYPE2_READWRITE_ACCESS;
 
-	cc_ndef = g_try_malloc0(sizeof(struct near_ndef_message));
-	cookie = g_try_malloc0(sizeof(struct t2_cookie));
 	cookie->adapter_idx = adapter_idx;
 	cookie->target_idx = target_idx;
 	cookie->current_block = CC_BLOCK_START;
@@ -572,6 +589,13 @@ static int nfctype2_format(uint32_t adapter_idx, uint32_t target_idx,
 
 	err = near_adapter_send(cookie->adapter_idx, (uint8_t *)&cmd,
 					sizeof(cmd), format_resp, cookie);
+
+out:
+	if (err < 0) {
+		g_free(t2_cc);
+		g_free(cc_ndef);
+		g_free(cookie);
+	}
 
 	return err;
 }
@@ -601,4 +625,3 @@ static void nfctype2_exit(void)
 
 NEAR_PLUGIN_DEFINE(nfctype2, "NFC Forum Type 2 tags support", VERSION,
 			NEAR_PLUGIN_PRIORITY_HIGH, nfctype2_init, nfctype2_exit)
-

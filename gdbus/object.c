@@ -174,11 +174,6 @@ static DBusMessage *introspect(DBusConnection *connection,
 	struct generic_data *data = user_data;
 	DBusMessage *reply;
 
-	if (!dbus_message_has_signature(message, DBUS_TYPE_INVALID_AS_STRING)) {
-		error("Unexpected signature to introspect call");
-		return NULL;
-	}
-
 	if (data->introspect == NULL)
 		generate_introspection_xml(connection, data,
 						dbus_message_get_path(message));
@@ -617,16 +612,12 @@ static gboolean check_signal(DBusConnection *conn, const char *path,
 	for (signal = iface->signals; signal && signal->name; signal++) {
 		if (!strcmp(signal->name, name)) {
 			*args = signal->args;
-			break;
+			return TRUE;
 		}
 	}
 
-	if (*args == NULL) {
-		error("No signal named %s on interface %s", name, interface);
-		return FALSE;
-	}
-
-	return TRUE;
+	error("No signal named %s on interface %s", name, interface);
+	return FALSE;
 }
 
 static dbus_bool_t emit_signal_valist(DBusConnection *conn,

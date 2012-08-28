@@ -93,6 +93,9 @@ enum record_type {
 	RECORD_TYPE_ERROR                     =   0xff
 };
 
+#define RECORD_TYPE_WKT "urn:nfc:wkt:"
+#define RECORD_TYPE_EXTERNAL "urn:nfc:ext:"
+
 struct near_ndef_record_header {
 	uint8_t mb;
 	uint8_t me;
@@ -107,6 +110,7 @@ struct near_ndef_record_header {
 	uint8_t	type_len;
 	enum record_type rec_type;
 	char *type_name;
+	uint32_t header_len;
 };
 
 struct near_ndef_text_record {
@@ -204,6 +208,11 @@ struct near_ndef_record {
 
 	/* HANDOVER type */
 	struct near_ndef_ho_record   *ho;
+
+	char *type;
+
+	uint8_t *data;
+	size_t data_len;
 };
 
 static DBusConnection *connection = NULL;
@@ -230,6 +239,11 @@ char *__near_ndef_record_get_path(struct near_ndef_record *record)
 	return record->path;
 }
 
+char *__near_ndef_record_get_type(struct near_ndef_record *record)
+{
+	return record->type;
+}
+
 static void append_text_record(struct near_ndef_text_record *text,
 					DBusMessageIter *dict)
 {
@@ -252,10 +266,9 @@ static void append_text_record(struct near_ndef_text_record *text,
 		near_dbus_dict_append_basic(dict, "Representation",
 						DBUS_TYPE_STRING,
 						&(text->data));
-
 }
 
-static const char *uri_prefix[NFC_MAX_URI_ID + 1] = {
+static const char *uri_prefixes[NFC_MAX_URI_ID + 1] = {
 	"",
 	"http://www.",
 	"https://www.",
@@ -299,7 +312,7 @@ const char *__near_ndef_get_uri_prefix(uint8_t id)
 	if (id > NFC_MAX_URI_ID)
 		return NULL;
 
-	return uri_prefix[id];
+	return uri_prefixes[id];
 }
 
 static void append_uri_record(struct near_ndef_uri_record *uri,
@@ -318,7 +331,7 @@ static void append_uri_record(struct near_ndef_uri_record *uri,
 		return;
 	}
 
-	prefix = uri_prefix[uri->identifier];
+	prefix = uri_prefixes[uri->identifier];
 
 	DBG("URI prefix %s", prefix);
 
@@ -443,7 +456,6 @@ static void append_record(struct near_ndef_record *record,
 		append_mime_record(record->mime, dict);
 		break;
 	}
-
 }
 
 static DBusMessage *get_properties(DBusConnection *conn,
@@ -613,6 +625,8 @@ static void free_ndef_record(struct near_ndef_record *record)
 	}
 
 	g_free(record->header);
+	g_free(record->type);
+	g_free(record->data);
 	g_free(record);
 	record = NULL;
 }
@@ -645,7 +659,7 @@ static char *action_to_string(uint8_t action)
  * Validate type and type length and returns
  * type.
  *
- * @param type    Type name in hex foarmat
+ * @param type    Type name in hex format
  * @param type_lenth Type name length
  *
  * @return enum record type
@@ -669,7 +683,7 @@ static enum record_type get_external_record_type(uint8_t *type,
  * type.
  *
  * @param tnf     TypeNameFormat value
- * @param type    Type name in hex foarmat
+ * @param type    Type name in hex format
  * @param type_lenth Type name length
  *
  * @return enum record type
@@ -737,6 +751,48 @@ static enum record_type get_record_type(enum record_tnf tnf,
 	return RECORD_TYPE_UNKNOWN;
 }
 
+static int build_record_type_string(struct near_ndef_record *rec)
+{
+	uint8_t tnf;
+
+	DBG("");
+
+	if (rec == NULL || rec->header == NULL)
+		return -EINVAL;
+
+	tnf = rec->header->tnf;
+
+	if (rec->header->rec_type == RECORD_TYPE_WKT_SMART_POSTER) {
+		rec->type = g_strdup_printf(RECORD_TYPE_WKT "U");
+		return 0;
+	}
+
+	switch (tnf) {
+	case RECORD_TNF_EMPTY:
+	case RECORD_TNF_UNKNOWN:
+	case RECORD_TNF_UNCHANGED:
+		return -EINVAL;
+
+	case RECORD_TNF_URI:
+	case RECORD_TNF_MIME:
+		rec->type = g_strndup(rec->header->type_name,
+				      rec->header->type_len);
+		break;
+
+	case RECORD_TNF_WELLKNOWN:
+		rec->type = g_strdup_printf(RECORD_TYPE_WKT "%s",
+				      rec->header->type_name);
+		break;
+
+	case RECORD_TNF_EXTERNAL:
+		rec->type = g_strdup_printf(RECORD_TYPE_EXTERNAL "%s",
+				      rec->header->type_name);
+		break;
+	}
+
+	return 0;
+}
+
 static uint8_t validate_record_begin_and_end_bits(uint8_t *msg_mb,
 					uint8_t *msg_me, uint8_t rec_mb,
 					uint8_t rec_me)
@@ -780,8 +836,8 @@ static uint8_t validate_record_begin_and_end_bits(uint8_t *msg_mb,
  *
  * Parse the ndef record header and cache the begin, end, chunkflag,
  * short-record and type-name-format bits. ID length and field, record
- * type, paylaod length and offset (where payload byte starts in input
- * parameter). Validate offset for everystep forward against total
+ * type, payload length and offset (where payload byte starts in input
+ * parameter). Validate offset for every step forward against total
  * available length.
  *
  * @note : Caller responsibility to free the memory.
@@ -798,6 +854,7 @@ static struct near_ndef_record_header *parse_record_header(uint8_t *rec,
 {
 	struct near_ndef_record_header *rec_header = NULL;
 	uint8_t *type = NULL;
+	uint32_t header_len = 0;
 
 	DBG("length %d", length);
 
@@ -824,13 +881,16 @@ static struct near_ndef_record_header *parse_record_header(uint8_t *rec,
 
 	offset++;
 	rec_header->type_len = rec[offset++];
+	header_len = 2; /* type length + header bits */
 
 	if (rec_header->sr == 1) {
 		rec_header->payload_len = rec[offset++];
+		header_len++;
 	} else {
 		rec_header->payload_len =
 			g_ntohl(*((uint32_t *)(rec + offset)));
 		offset += 4;
+		header_len += 4;
 
 		if (offset >= length)
 			goto fail;
@@ -840,6 +900,7 @@ static struct near_ndef_record_header *parse_record_header(uint8_t *rec,
 
 	if (rec_header->il == 1) {
 		rec_header->il_length = rec[offset++];
+		header_len++;
 
 		if (offset >= length)
 			goto fail;
@@ -855,6 +916,7 @@ static struct near_ndef_record_header *parse_record_header(uint8_t *rec,
 
 		memcpy(type, rec + offset, rec_header->type_len);
 		offset += rec_header->type_len;
+		header_len += rec_header->type_len;
 
 		if (offset >= length)
 			goto fail;
@@ -871,6 +933,7 @@ static struct near_ndef_record_header *parse_record_header(uint8_t *rec,
 		memcpy(rec_header->il_field, rec + offset,
 					rec_header->il_length);
 		offset += rec_header->il_length;
+		header_len += rec_header->il_length;
 
 		if (offset >= length)
 			goto fail;
@@ -882,6 +945,7 @@ static struct near_ndef_record_header *parse_record_header(uint8_t *rec,
 	rec_header->rec_type = get_record_type(rec_header->tnf, type,
 							rec_header->type_len);
 	rec_header->offset = offset;
+	rec_header->header_len = header_len;
 	rec_header->type_name = g_strndup((char *) type, rec_header->type_len);
 
 	g_free(type);
@@ -1026,7 +1090,7 @@ parse_uri_record(uint8_t *rec, uint32_t length)
 
 	}
 
-	DBG("Identfier  '0X%X'", uri_record->identifier);
+	DBG("Identifier  '0X%X'", uri_record->identifier);
 	DBG("Field  '%.*s'", uri_record->field_length, uri_record->field);
 
 	return uri_record;
@@ -1042,7 +1106,7 @@ fail:
  * @brief Validate titles records language code in Smartposter.
  * There must not be two or more records with the same language identifier.
  *
- * @param[in] GSList *  list of title recods (struct near_ndef_text_record *)
+ * @param[in] GSList *  list of title records (struct near_ndef_text_record *)
  *
  * @return Zero on success
  *         Negative value on failure
@@ -1267,7 +1331,7 @@ fail:
 static struct near_ndef_mime_record *
 parse_mime_type(struct near_ndef_record *record,
 			uint8_t *ndef_data, size_t ndef_length, size_t offset,
-			uint32_t payload_length, near_bool_t bt_pair)
+			uint32_t payload_length, near_bool_t action)
 {
 	struct near_ndef_mime_record *mime = NULL;
 	int err = 0;
@@ -1283,13 +1347,13 @@ parse_mime_type(struct near_ndef_record *record,
 
 	mime->type = g_strdup(record->header->type_name);
 
-	DBG("MIME Type  '%s' action: %d", mime->type, bt_pair);
+	DBG("MIME Type  '%s' action: %d", mime->type, action);
 	if (strcmp(mime->type, BT_MIME_STRING_2_1) == 0) {
 		err = __near_bluetooth_parse_oob_record(BT_MIME_V2_1,
-				&ndef_data[offset], bt_pair);
+				&ndef_data[offset], action);
 	} else if (strcmp(mime->type, BT_MIME_STRING_2_0) == 0) {
 		err = __near_bluetooth_parse_oob_record(BT_MIME_V2_0,
-				&ndef_data[offset], bt_pair);
+				&ndef_data[offset], action);
 	}
 
 	if (err < 0) {
@@ -1319,7 +1383,7 @@ static uint8_t near_ndef_set_mb_me(uint8_t *hdr, near_bool_t first_rec,
 }
 
 /**
- * @brief Allocates ndef message struture
+ * @brief Allocates ndef message structure
  *
  * Allocates ndef message structure and fill message header byte,
  * type length byte, payload length and type name. Offset is payload
@@ -1705,7 +1769,7 @@ struct near_ndef_message *near_ndef_prepare_handover_record(char* type_name,
 		goto fail;
 
 	/*
-	 * Additionnal NDEF (associated to the ac records)
+	 * Additional NDEF (associated to the ac records)
 	 * Add the BT record which is not part in hs initial size
 	 */
 	if (bt_msg != NULL) {
@@ -1770,7 +1834,6 @@ static int near_fill_ho_record(struct near_ndef_ho_record *ho,
 	int rec_count;
 	int i;
 	GSList *temp;
-
 
 	rec_count = g_slist_length(acs);
 	ho->ac_records = g_try_malloc0(rec_count *
@@ -2015,7 +2078,7 @@ int __near_ndef_record_register(struct near_ndef_record *record, char *path)
 GList *near_ndef_parse(uint8_t *ndef_data, size_t ndef_length)
 {
 	GList *records;
-	uint8_t p_mb = 0, p_me = 0;
+	uint8_t p_mb = 0, p_me = 0, *record_start;
 	size_t offset = 0;
 	struct near_ndef_record *record = NULL;
 
@@ -2047,6 +2110,7 @@ GList *near_ndef_parse(uint8_t *ndef_data, size_t ndef_length)
 			goto fail;
 		}
 
+		record_start = ndef_data + offset;
 		offset = record->header->offset;
 
 		switch (record->header->rec_type) {
@@ -2122,7 +2186,18 @@ GList *near_ndef_parse(uint8_t *ndef_data, size_t ndef_length)
 			break;
 		}
 
+		record->data_len = record->header->header_len +
+					record->header->payload_len;
+
+		record->data = g_try_malloc0(record->data_len);
+		if (record->data == NULL)
+			goto fail;
+
+		memcpy(record->data, record_start, record->data_len);
+
 		records = g_list_append(records, record);
+
+		build_record_type_string(record);
 
 		offset += record->header->payload_len;
 	}
@@ -2210,7 +2285,8 @@ int near_ndef_record_length(uint8_t *ndef_in, size_t ndef_in_length)
 int near_ndef_count_records(uint8_t *ndef_in, size_t ndef_in_length,
 			uint8_t record_type)
 {
-	uint8_t p_mb = 0, p_me = 0, err;
+	uint8_t p_mb = 0, p_me = 0;
+	int err;
 	size_t offset;
 	struct near_ndef_record *record = NULL;
 	int counted_records = 0 ;
@@ -2272,7 +2348,7 @@ fail:
  * @brief Prepare Text ndef record
  *
  * Prepare text ndef record with provided input data and return
- * ndef message structure (lenght and byte stream) in success or
+ * ndef message structure (length and byte stream) in success or
  * NULL in failure case.
  *
  * @note : caller responsibility to free the input and output
@@ -2590,7 +2666,7 @@ static struct near_ndef_message *build_sp_record(DBusMessage *msg)
 	DBG("");
 
 	/*
-	 * Currently this funtion supports only mandatory URI record,
+	 * Currently this function supports only mandatory URI record,
 	 * TODO: Other records support.
 	 */
 	uri = get_uri_field(msg);

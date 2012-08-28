@@ -242,8 +242,10 @@ static near_bool_t snep_read(int client_fd,
 		return FALSE;
 
 	snep_data->nfc_data = g_try_malloc0(ndef_length + TLV_SIZE);
-	if (snep_data->nfc_data == NULL)
+	if (snep_data->nfc_data == NULL) {
+		g_free(snep_data);
 		return FALSE;
+	}
 
 	snep_data->nfc_data_length = ndef_length;
 	snep_data->nfc_data_ptr = snep_data->nfc_data;
@@ -265,7 +267,6 @@ static near_bool_t snep_read(int client_fd,
 		return FALSE;
 	case SNEP_REQ_PUT:
 		return snep_read_ndef(client_fd, snep_data);
-		break;
 	}
 
 	return FALSE;

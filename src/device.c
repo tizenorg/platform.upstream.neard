@@ -235,7 +235,7 @@ static char *sn_from_message(DBusMessage *msg)
 				return NEAR_DEVICE_SN_SNEP;
 			else if (g_strcmp0(value, "Handover") == 0)
 				return NEAR_DEVICE_SN_HANDOVER;
-		        else
+			else
 				return NULL;
 
 			break;
@@ -353,6 +353,8 @@ int near_device_add_records(struct near_device *device, GList *records,
 		device->records = g_list_append(device->records, record);
 	}
 
+	__near_agent_ndef_parse_records(device->records);
+
 	if (cb != NULL)
 		cb(device->adapter_idx, device->target_idx, status);
 
@@ -430,6 +432,11 @@ int __near_device_push(struct near_device *device,
 	GSList *list;
 
 	DBG("");
+
+	if (__near_adapter_get_dep_state(device->adapter_idx) == FALSE) {
+		near_error("DEP link is not established");
+		return -ENOLINK;
+	}
 
 	for (list = driver_list; list; list = list->next) {
 		struct near_device_driver *driver = list->data;

@@ -85,6 +85,7 @@ int __near_adapter_remove_target(uint32_t idx, uint32_t target_idx);
 int __near_adapter_add_device(uint32_t idx, uint8_t *nfcid, uint8_t nfcid_len);
 int __near_adapter_remove_device(uint32_t idx);
 int __near_adapter_set_dep_state(uint32_t idx, near_bool_t dep);
+near_bool_t __near_adapter_get_dep_state(uint32_t idx);
 void __near_adapter_tags_changed(uint32_t adapter_idx);
 void __near_adapter_devices_changed(uint32_t adapter_idx);
 void __near_adapter_listen(struct near_device_driver *driver);
@@ -101,6 +102,7 @@ void __near_ndef_cleanup(void);
 int __near_ndef_record_register(struct near_ndef_record *record, char *path);
 void __near_ndef_record_free(struct near_ndef_record *record);
 char *__near_ndef_record_get_path(struct near_ndef_record *record);
+char *__near_ndef_record_get_type(struct near_ndef_record *record);
 const char *__near_ndef_get_uri_prefix(uint8_t id);
 struct near_ndef_message *__ndef_build_from_message(DBusMessage *msg);
 
@@ -146,11 +148,6 @@ int __near_netlink_dep_link_up(uint32_t idx, uint32_t target_idx,
 				uint8_t comm_mode, uint8_t rf_mode);
 int __near_netlink_dep_link_down(uint32_t idx);
 int __near_netlink_adapter_enable(int idx, near_bool_t enable);
-int __near_netlink_activate_target(uint32_t adapter_idx,
-					uint32_t target_idx,
-					uint32_t protocol);
-int __near_netlink_deactivate_target(uint32_t adapter_idx,
-					uint32_t target_idx);
 int __near_netlink_init(void);
 void __near_netlink_cleanup(void);
 
@@ -174,7 +171,13 @@ int __near_bluetooth_parse_oob_record(uint8_t version, uint8_t *bt_data,
 int __near_bluetooth_pair(void *data);
 uint8_t *__near_bluetooth_local_get_properties(int *bt_data_len);
 
-int __near_handover_agent_register(const char *sender, const char *path);
-int __near_handover_agent_unregister(const char *sender, const char *path);
-int __near_handover_init(void);
-void __near_handover_cleanup(void);
+void __near_agent_ndef_parse_records(GList *records);
+int __near_agent_ndef_register(const char *sender, const char *path,
+						const char *record_type);
+int __near_agent_ndef_unregister(const char *sender, const char *path,
+						const char *record_type);
+int __near_agent_handover_register(const char *sender, const char *path);
+int __near_agent_handover_unregister(const char *sender, const char *path);
+
+int __near_agent_init(void);
+void __near_agent_cleanup(void);
