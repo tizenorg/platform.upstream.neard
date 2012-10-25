@@ -11,6 +11,7 @@ def help_text():
 	print "e.g. < %s /org/neard/nfc0/tag0 Text UTF-8 en-US hello,Type2! >" % (sys.argv[0])
 	print "e.g. < %s /org/neard/nfc0/tag0 URI http://www.nfc-forum.com >" % (sys.argv[0])
 	print "e.g. < %s /org/neard/nfc0/tag0 SmartPoster http://www.nfc-forum.com >" % (sys.argv[0])
+	print "e.g. < %s /org/neard/nfc0/tag0 Raw <NDEF_file> >" % (sys.argv[0])
 	sys.exit(1)
 
 if len(sys.argv) < 2:
@@ -37,6 +38,15 @@ elif len(sys.argv) == 4:
 	elif sys.argv[2] in ["SmartPoster"]:
 		tag.Write(({ "Type" : "SmartPoster",
 				"URI" : sys.argv[3] }))
+	elif sys.argv[2] in ["Raw"]:
+		ndef = file(sys.argv[3]).read().rsplit(' ')
+		ndef_stream = bytearray()
+
+		for b in ndef:
+			ndef_stream.append(int(b, 16))
+
+		tag.Write(({ "Type" : "Raw",
+				"NDEF" : dbus.ByteArray(ndef_stream) }))
 	else:
 		help_text()
 else:
