@@ -445,6 +445,32 @@ fail:
 	return __near_error_failed(msg, ENOMEM);
 }
 
+static DBusMessage *get_raw_ndef(DBusConnection *conn,
+				DBusMessage *msg, void *data)
+{
+	struct near_tag *tag = data;
+	DBusMessage *reply;
+	DBusMessageIter iter, array;
+
+	DBG("");
+
+	reply = dbus_message_new_method_return(msg);
+	if (reply == NULL)
+		return NULL;
+
+	dbus_message_iter_init_append(reply, &iter);
+
+	dbus_message_iter_open_container(&iter, DBUS_TYPE_ARRAY,
+						DBUS_TYPE_BYTE_AS_STRING,
+						&array);
+
+	__near_ndef_append_records(&array, tag->records);
+
+	dbus_message_iter_close_container(&iter, &array);
+
+	return reply;
+}
+
 static const GDBusMethodTable tag_methods[] = {
 	{ GDBUS_METHOD("GetProperties",
 				NULL, GDBUS_ARGS({"properties", "a{sv}"}),
@@ -454,6 +480,9 @@ static const GDBusMethodTable tag_methods[] = {
 				NULL, set_property) },
 	{ GDBUS_ASYNC_METHOD("Write", GDBUS_ARGS({"attributes", "a{sv}"}),
 							NULL, write_ndef) },
+	{ GDBUS_METHOD("GetRawNDEF",
+				NULL, GDBUS_ARGS({"raw NDEF", "ay"}),
+				get_raw_ndef) },
 	{ },
 };
 
