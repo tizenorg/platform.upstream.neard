@@ -29,6 +29,8 @@ Method		dict GetProperties()
 			record type and is described by the Record properties.
 			For example, one would add a type, a Language, an
 			Encoding and a Representation for a text record.
+			To push raw NDEF, one should use the NDEF key and use
+			an array of bytes for the NDEF stream.
 
 			Possible Errors: org.neard.Error.PermissionDenied
 					 org.neard.Error.InvalidArguments

@@ -21,6 +21,7 @@ def help_text():
 	print "e.g. < %s /org/neard/nfc0/tag0 E-Mail test@test.com >" % (sys.argv[0])
 	print "e.g. < %s /org/neard/nfc0/tag0 MIME wifi_wsc YourAPname passphrase >" % (sys.argv[0])
 	print "e.g. < %s /org/neard/nfc0/tag0 MIME wifi_wsc YourAPname >" % (sys.argv[0])
+	print "e.g. < %s /org/neard/nfc0/tag0 Raw <NDEF_file> >" % (sys.argv[0])
 
 	sys.exit(1)
 
@@ -71,6 +72,16 @@ elif sys.argv[2] in ["MIME"]:
 				"Passphrase" : sys.argv[5] }))
 	else:
 		help_text()
+
+elif sys.argv[2] in ["Raw"]:
+	ndef = file(sys.argv[3]).read().rsplit(' ')
+	ndef_stream = bytearray()
+
+	for b in ndef:
+		ndef_stream.append(int(b, 16))
+
+	tag.Write(({ "Type" : "Raw",
+			"NDEF" : dbus.ByteArray(ndef_stream) }))
 
 else:
 	help_text()

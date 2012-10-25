@@ -3339,6 +3339,64 @@ static struct near_ndef_message *build_mime_record(DBusMessage *msg)
 	return NULL;
 }
 
+static struct near_ndef_message * build_raw_ndef(DBusMessage *msg)
+{
+	DBusMessageIter iter, arr_iter;
+	struct near_ndef_message *ndef;
+
+	DBG("");
+
+	ndef = NULL;
+
+	dbus_message_iter_init(msg, &iter);
+	dbus_message_iter_recurse(&iter, &arr_iter);
+
+	while (dbus_message_iter_get_arg_type(&arr_iter) !=
+					DBUS_TYPE_INVALID) {
+		const char *key;
+		DBusMessageIter ent_iter;
+		DBusMessageIter var_iter;
+
+		dbus_message_iter_recurse(&arr_iter, &ent_iter);
+		dbus_message_iter_get_basic(&ent_iter, &key);
+		dbus_message_iter_next(&ent_iter);
+		dbus_message_iter_recurse(&ent_iter, &var_iter);
+
+		switch (dbus_message_iter_get_arg_type(&var_iter)) {
+		case DBUS_TYPE_ARRAY:
+			if (g_strcmp0(key, "NDEF") == 0) {
+				DBusMessageIter array;
+				uint8_t *data;
+				int data_size;
+
+				dbus_message_iter_recurse(&var_iter, &array);
+				dbus_message_iter_get_fixed_array(&array,
+								&data,
+								&data_size);
+
+				ndef = g_try_malloc0(data_size);
+				if (ndef == NULL)
+					break;
+
+				ndef->data = g_try_malloc0(data_size);
+				if (ndef->data == NULL) {
+					g_free(ndef);
+					break;
+				}
+
+				ndef->length = data_size;
+				memcpy(ndef->data, data, data_size);
+			}
+
+			break;
+		}
+
+		dbus_message_iter_next(&arr_iter);
+	}
+
+	return ndef;
+}
+
 struct near_ndef_message *__ndef_build_from_message(DBusMessage *msg)
 {
 	DBusMessageIter iter;
@@ -3392,6 +3450,9 @@ struct near_ndef_message *__ndef_build_from_message(DBusMessage *msg)
 				break;
 			} else if (g_strcmp0(value, "MIME") == 0) {
 				ndef = build_mime_record(msg);
+				break;
+			} else if (g_strcmp0(value, "Raw") == 0) {
+				ndef = build_raw_ndef(msg);
 				break;
 			} else {
 				near_error("%s not supported", value);
