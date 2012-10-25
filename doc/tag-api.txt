@@ -36,6 +36,10 @@ Method		dict GetProperties()
 					 org.neard.Error.InvalidArguments
 					 org.neard.Error.InProgress
 
+		array{byte} GetRawNDEF()
+
+			Return the tag's NDEF as a raw bytes stream.
+
 
 Signals		PropertyChanged(string name, variant value)
 
