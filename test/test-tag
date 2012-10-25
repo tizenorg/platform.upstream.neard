@@ -28,6 +28,7 @@ def usage():
 	print "		   Type is MIME, parameters are wifi_wsc <ssid> <passphrase>"
 	print "		If type is MIME, and WiFi AP is open network"
 	print "		   Type is MIME, parameters are wifi_wsc <ssid>"
+	print "		If type is RAW, parameters are Raw <NDEF_file>"
 	print "e.g. < %s /org/neard/nfc0/tag0 Text UTF-8 en-US hello,NFC! >" % (sys.argv[0])
 	print "e.g. < %s /org/neard/nfc0/tag0 URI http://www.nfc-forum.com >" % (sys.argv[0])
 	print "e.g. < %s /org/neard/nfc0/tag0 SmartPoster http://www.nfc-forum.com >" % (sys.argv[0])
@@ -35,6 +36,7 @@ def usage():
 	print "e.g. < %s /org/neard/nfc0/tag0 E-Mail test@test.com >" % (sys.argv[0])
 	print "e.g. < %s /org/neard/nfc0/tag0 MIME wifi_wsc YourAPname passphrase >" % (sys.argv[0])
 	print "e.g. < %s /org/neard/nfc0/tag0 MIME wifi_wsc YourAPname >" % (sys.argv[0])
+	print "e.g. < %s /org/neard/nfc0/tag0 Raw <NDEF_file> >" % (sys.argv[0])
 
 
 	sys.exit(1)
@@ -129,6 +131,17 @@ if (sys.argv[1] == "write"):
 				"MIME" : "application/vnd.wfa.wsc",
 				"SSID" : sys.argv[5],
 				"Passphrase" : sys.argv[6] }))
+
+	elif sys.argv[3] in ["Raw"]:
+		ndef = file(sys.argv[4]).read().rsplit(' ')
+		ndef_stream = bytearray()
+
+		for b in ndef:
+			ndef_stream.append(int(b, 16))
+
+		tag.Write(({ "Type" : "Raw",
+				"NDEF" : dbus.ByteArray(ndef_stream) }))
+
 	else:
 		usage()
 
