@@ -481,7 +481,7 @@ static const GDBusMethodTable tag_methods[] = {
 	{ GDBUS_ASYNC_METHOD("Write", GDBUS_ARGS({"attributes", "a{sv}"}),
 							NULL, write_ndef) },
 	{ GDBUS_METHOD("GetRawNDEF",
-				NULL, GDBUS_ARGS({"raw NDEF", "ay"}),
+				NULL, GDBUS_ARGS({"NDEF", "ay"}),
 				get_raw_ndef) },
 	{ },
 };
