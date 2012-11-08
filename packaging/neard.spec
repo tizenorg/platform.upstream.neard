@@ -1,5 +1,5 @@
 %define kernel_version 3.0
-%define kernel_target adaptation-bb
+%define kernel_target mfld-blackbay
 Name:       neard
 Summary:    Near Field Communication Manager
 Version:    0.6
@@ -12,8 +12,8 @@ Source2:    neard.service
 Requires(post): /bin/ln
 BuildRequires:  pkgconfig(glib-2.0)
 BuildRequires:  pkgconfig(dbus-1)
-BuildRequires:  pkgconfig(libnl-1)
-BuildRequires:  kernel-adaptation-bb-devel
+BuildRequires:  pkgconfig(libnl-2.0)
+BuildRequires:  kernel-mfld-blackbay-devel
 
 Requires:   systemd
 Requires(post):   systemd
