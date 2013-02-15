@@ -1,0 +1,82 @@
+Background
+==========
+
+- Priority scale: High, Medium and Low
+
+- Complexity scale: C1, C2, C4 and C8.
+   The complexity scale is exponential, with complexity 1 being the
+   lowest complexity. Complexity is a function of both task 'complexity'
+   and task 'scope'.
+
+Core
+====
+
+- Handover Agent API
+
+  Priority: Medium
+  Complexity: C4
+  Owner: Szymon Janc <szymon.janc@tieto.com>
+
+  neard's handover agent API will allow an eventual BlueZ neard plugin to
+  pass OOB data to neard. From this OOB data, neard will build an Hs record
+  and reply to the handover requester.
+
+- Card Emulation Mode
+
+  Priority: Low
+  Complexity: C8
+  Dependencies: Core:NDEF building library
+  Owner: Samuel Ortiz <sameo@linux.intel.com>
+
+  In card emulation mode, the NFC adapter is in passive mode, and gets
+  activated by an initiator mode device. Then the initiator sends command
+  that the target is supposed to interpret and respond to. Most of the
+  commands are tag specific.
+  For a proper card emulation mode support, the NFC adapter must enter the
+  polling loop and not only initiate the RF field, but then wait for intiator
+  to activate it. Once activated, the NFC socket should enter the accept
+  state, and dispatch the various commands to the right plugins (one per
+  protocol, a.k.a. tags).
+
+
+Reader mode
+===========
+
+
+Writer mode
+===========
+
+- MIFARE writer mode support
+
+  Priority: Low
+  Complexity: C2
+  Owner: Dorota Moskal <dorota.moskal@tieto.com>
+
+
+p2p mode
+========
+
+- Bluetooth Handover integration
+
+  Priority: Medium
+  Complexity: C4
+  Dependencies: Core:Handover Agent API
+  Owner: Olivier Guiter <olivier.guiter@linux.intel.com>
+
+  The handover integration has to be done between bluetoothd, obexd and
+  neard. Obexd or BlueZ should be able to call a handover requester
+  org.neard.Manager method to send an Hr to a remote peer. This asynchronous
+  method will return upon reception of an Hs record. This is when BlueZ
+  will be able to initiate the pairing.
+  On the other hand, neard should be able to get the appropriate OOB data
+  from BlueZ through the handover agent API, and build an Hs to send to
+  the handover requester. The latter will then initiate the pairing.
+
+- SNEP and LLCP validation tests
+
+  Priority: Medium
+  Complexity: C4
+  Owner: Ravi kumar Veeramally <ravikumar.veeramally@linux.intel.com>
+
+  Implement SNEP validation test cases as an optional neard plugin, and
+  LLCP ones as a set of tools/ binaries.
