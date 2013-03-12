@@ -20,45 +20,107 @@ Methods:	dict GetProperties()
 
 			Possible Errors: org.neard.Error.DoesNotExist
 					 org.neard.Error.InvalidArguments
- 
+
+		void StartPollLoop(string mode)
+
+			Starts the adapter polling loop. Depending on the mode,
+			the adapter will start polling for targets, listening
+			for NFC devices or both.
+			The mode parameter can have the following values:
+			"Initiator", "Target" or "Dual". For any other value, the
+			adapter will fall back to initiator mode.
+			Dual mode will have the adapter alternate between target
+			and initiator modes during the polling loop.
+
+			This process will start emitting TagFound and
+			PropertyChanged "Polling" signals.
+
+			Possible errors: org.neard.Error.NotReady
+					 org.neard.Error.Failed
+					 org.neard.Error.NotSupported
+
+		void StopPollLoop()
+
+			The adapter polling loop will stop.
+
+			Possible errors: org.neard.Error.NotReady
+					 org.neard.Error.Failed
+					 org.neard.Error.NotSupported
+
+		object StartEmulation(dict attributes)
+
+			Starts tag emulation mode.
+
+			Adapters can only emulate one target at a time, so
+			subsequent calls to this method will always return
+			the same object path.
+
+			The attributes dictionary is described by the
+			Record properties.
+			For example, one would add a type, a Language, an
+			Encoding and a Representation for emulating a text
+			NDEF record.
+
+			Returns the object path for the emulated target.
+
+			Possible errors: org.neard.Error.NotReady
+					 org.neard.Error.Failed
+					 org.neard.Error.NotSupported
+
+		void StopEmulation()
+
+			Stops tag emulation mode.
+
+			Possible errors: org.neard.Error.NotReady
+					 org.neard.Error.Failed
+					 org.neard.Error.NotSupported
+
 
 Signals		PropertyChanged(string name, variant value)
 
 			This signal indicates a changed value of the given
 			property.
 
-		TargetFound(string address, dict values)
+		TagFound(string address, dict values)
 
-			This signal is sent whenever an NFC target is found,
+			This signal is sent whenever an NFC tag is found,
 			as a result of a probe response reception.
  
 			The dictionary contains basically the same values
 			that are returned by the GetProperties method
-			from the org.neard.Target interface.
+			from the org.neard.Tag interface.
 
-		TargetLost(string address)
+		TagLost(string address)
 
-			This signal is sent whenever the NFC target is no longer
+			This signal is sent whenever the NFC tag is no longer
 			in sight, or when it's been de-activated.
 
 
-Properties:	string Mode [readwrite]
+Properties:	string Mode [readonly]
 
-			The adapter mode.
+			The adapter NFC radio mode.
 
-			Valid types are "initiator" and "target".
-			The default value for the adapter mode is "target".
+			Valid types are "Initiator", "Target" and "Idle"
 
-		string CommunicationMode [readwrite]
+		boolean Powered [readwrite]
 
-		       The adapter communication mode.
+			Switch an adapter on or off.
 
-		       Valid types are "passive" and "active". In passive mode, the
-		       initiator never turns its RF field off.
-		       The default value for the adapter communication mode
-		       is "passive".
+		boolean Polling [readonly]
 
-		string Powered [readwrite]
+			Indicates that the adapter is currently polling for targets.
+			This is only valid when the adapter is in initiator mode.
 
-		       Switch an adapter on or off.
+		array{string} Protocols [readonly]
 
+			The adapter supported protocols.
+			Possible values are "Felica", "MIFARE", "Jewel",
+			"ISO-DEP" and "NFC-DEP".
+
+		array{object} Tags [readonly]
+
+			The tags object paths.
+
+		array{object} Devices [readonly]
+
+			The devices object paths.

@@ -33,6 +33,53 @@
 
 #include "near.h"
 
+static struct {
+	near_bool_t constant_poll;
+} near_settings  = {
+	.constant_poll = FALSE,
+};
+
+static GKeyFile *load_config(const char *file)
+{
+	GError *err = NULL;
+	GKeyFile *keyfile;
+
+	keyfile = g_key_file_new();
+
+	g_key_file_set_list_separator(keyfile, ',');
+
+	if (!g_key_file_load_from_file(keyfile, file, 0, &err)) {
+		if (err->code != G_FILE_ERROR_NOENT) {
+			near_error("Parsing %s failed: %s", file,
+								err->message);
+		}
+
+		g_error_free(err);
+		g_key_file_free(keyfile);
+		return NULL;
+	}
+
+	return keyfile;
+}
+
+static void parse_config(GKeyFile *config)
+{
+	GError *error = NULL;
+	gboolean boolean;
+
+	if (config == NULL)
+		return;
+
+	DBG("parsing main.conf");
+
+	boolean = g_key_file_get_boolean(config, "General",
+						"ConstantPoll", &error);
+	if (error == NULL)
+		near_settings.constant_poll = boolean;
+
+	g_clear_error(&error);
+}
+
 static GMainLoop *main_loop = NULL;
 
 static volatile sig_atomic_t __terminated = 0;
@@ -57,6 +104,8 @@ static void disconnect_callback(DBusConnection *conn, void *user_data)
 }
 
 static gchar *option_debug = NULL;
+static gchar *option_plugin = NULL;
+static gchar *option_noplugin = NULL;
 static gboolean option_detach = TRUE;
 static gboolean option_version = FALSE;
 
@@ -78,10 +127,22 @@ static GOptionEntry options[] = {
 	{ "nodaemon", 'n', G_OPTION_FLAG_REVERSE,
 				G_OPTION_ARG_NONE, &option_detach,
 				"Don't fork daemon to background" },
+	{ "plugin", 'p', 0, G_OPTION_ARG_STRING, &option_plugin,
+				"Specify plugins to load", "NAME,..." },
+	{ "noplugin", 'P', 0, G_OPTION_ARG_STRING, &option_noplugin,
+				"Specify plugins not to load", "NAME,..." },
 	{ "version", 'v', 0, G_OPTION_ARG_NONE, &option_version,
 				"Show version information and exit" },
 	{ NULL },
 };
+
+near_bool_t near_setting_get_bool(const char *key)
+{
+	if (g_str_equal(key, "ConstantPoll") == TRUE)
+		return near_settings.constant_poll;
+
+	return FALSE;
+}
 
 int main(int argc, char *argv[])
 {
@@ -89,6 +150,7 @@ int main(int argc, char *argv[])
 	GError *error = NULL;
 	DBusConnection *conn;
 	DBusError err;
+	GKeyFile *config;
 	struct sigaction sa;
 
 	context = g_option_context_new(NULL);
@@ -121,13 +183,13 @@ int main(int argc, char *argv[])
 
 	dbus_error_init(&err);
 
-	conn = g_dbus_setup_bus(DBUS_BUS_SESSION, NFC_SERVICE, &err);
+	conn = g_dbus_setup_bus(DBUS_BUS_SYSTEM, NFC_SERVICE, &err);
 	if (conn == NULL) {
 		if (dbus_error_is_set(&err) == TRUE) {
 			fprintf(stderr, "%s\n", err.message);
 			dbus_error_free(&err);
 		} else
-			fprintf(stderr, "Can't register with session bus\n");
+			fprintf(stderr, "Can't register with system bus\n");
 		exit(1);
 	}
 
@@ -136,8 +198,20 @@ int main(int argc, char *argv[])
 	__near_log_init(option_debug, option_detach);
 	__near_dbus_init(conn);
 
-	__near_manager_init(conn);
+	config = load_config(CONFIGDIR "/main.conf");
+
+	parse_config(config);
+
+	__near_netlink_init();
+	__near_tag_init();
+	__near_device_init();
 	__near_adapter_init();
+	__near_ndef_init();
+	__near_manager_init(conn);
+	__near_bluetooth_init();
+	__near_agent_init();
+
+	__near_plugin_init(option_plugin, option_noplugin);
 
 	memset(&sa, 0, sizeof(sa));
 	sa.sa_handler = sig_term;
@@ -146,8 +220,16 @@ int main(int argc, char *argv[])
 
 	g_main_loop_run(main_loop);
 
-	__near_adapter_cleanup();
+	__near_plugin_cleanup();
+
+	__near_agent_cleanup();
+	__near_bluetooth_cleanup();
 	__near_manager_cleanup();
+	__near_ndef_cleanup();
+	__near_adapter_cleanup();
+	__near_device_cleanup();
+	__near_tag_cleanup();
+	__near_netlink_cleanup();
 
 	__near_dbus_cleanup();
 	__near_log_cleanup();
@@ -155,6 +237,9 @@ int main(int argc, char *argv[])
 	dbus_connection_unref(conn);
 
 	g_main_loop_unref(main_loop);
+
+	if (config)
+		g_key_file_free(config);
 
 	return 0;
 }
