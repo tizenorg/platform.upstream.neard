@@ -24,10 +24,9 @@
 
 #include <linux/socket.h>
 
-
 #include <glib.h>
 
-#include <near/nfc.h>
+#include <near/nfc_copy.h>
 #include <near/types.h>
 
 struct near_adapter;
@@ -73,7 +72,7 @@ void __near_manager_cleanup(void);
 
 #include <near/adapter.h>
 
-struct near_adapter * __near_adapter_create(uint32_t idx,
+struct near_adapter *__near_adapter_create(uint32_t idx,
 		const char *name, uint32_t protocols, near_bool_t powered);
 void __near_adapter_destroy(struct near_adapter *adapter);
 const char *__near_adapter_get_path(struct near_adapter *adapter);
@@ -111,6 +110,11 @@ uint8_t *__near_ndef_record_get_data(struct near_ndef_record *record, size_t *le
 void __near_ndef_append_records(DBusMessageIter *iter, GList *record);
 const char *__near_ndef_get_uri_prefix(uint8_t id);
 struct near_ndef_message *__ndef_build_from_message(DBusMessage *msg);
+
+#include <near/snep.h>
+
+int __near_snep_core_init(void);
+void __near_snep_core_cleanup(void);
 
 #include <near/tag.h>
 
@@ -167,9 +171,10 @@ void __near_plugin_cleanup(void);
 /* NFC Bluetooth Secure Simple Pairing */
 #define BT_MIME_V2_0		0
 #define BT_MIME_V2_1		1
+#define WIFI_WSC_MIME		2
 #define BT_MIME_STRING_2_0	"nokia.com:bt"
 #define BT_MIME_STRING_2_1	"application/vnd.bluetooth.ep.oob"
-#define WIFI_MIME_STRING	"application/vnd.wfa.wsc"
+#define WIFI_WSC_MIME_STRING	"application/vnd.wfa.wsc"
 
 /* Mime specific properties */
 #define OOB_PROPS_EMPTY		0x00
@@ -179,21 +184,65 @@ void __near_plugin_cleanup(void);
 #define OOB_PROPS_COD		0x08
 #define OOB_PROPS_SP		(OOB_PROPS_SP_HASH | OOB_PROPS_SP_RANDOM)
 
+/* Handover Agent Carrier Types */
+#define NEAR_HANDOVER_AGENT_BLUETOOTH	"bluetooth"
+#define NEAR_HANDOVER_AGENT_WIFI		"wifi"
+
+#define NEAR_CARRIER_MAX	2
+
+/* near_ndef_handover_carrier*/
+enum handover_carrier {
+	NEAR_CARRIER_EMPTY =  0x00,
+	NEAR_CARRIER_BLUETOOTH = 0x01,	/* bit 0 */
+	NEAR_CARRIER_WIFI      = 0x02,	/* bit 1 */
+	NEAR_CARRIER_UNKNOWN   = 0x80,	/* Bit 7 */
+};
+
+enum carrier_power_state {
+	CPS_INACTIVE    = 0x00,
+	CPS_ACTIVE      = 0x01,
+	CPS_ACTIVATING  = 0x02,
+	CPS_UNKNOWN     = 0x03,
+};
+
+enum ho_agent_carrier {
+	HO_AGENT_BT	= 0x00,
+	HO_AGENT_WIFI	= 0x01,
+	HO_AGENT_UNKNOWN = 0xFF
+};
+
+struct carrier_data {
+	uint8_t type;
+	uint8_t size;
+	enum carrier_power_state state;
+	uint8_t data[UINT8_MAX];
+};
+
 int __near_bluetooth_init(void);
 void __near_bluetooth_cleanup(void);
-int __near_bluetooth_parse_oob_record(uint8_t version, uint8_t *bt_data,
+void __near_bluetooth_legacy_start(void);
+void __near_bluetooth_legacy_stop(void);
+int __near_bluetooth_parse_oob_record(struct carrier_data *data,
 					uint16_t *properties, near_bool_t pair);
 int __near_bluetooth_pair(void *data);
-uint8_t *__near_bluetooth_local_get_properties(int *bt_data_len,
-							uint16_t mime_props);
+struct carrier_data *__near_bluetooth_local_get_properties(uint16_t mime_props);
 
 void __near_agent_ndef_parse_records(GList *records);
 int __near_agent_ndef_register(const char *sender, const char *path,
 						const char *record_type);
 int __near_agent_ndef_unregister(const char *sender, const char *path,
 						const char *record_type);
-int __near_agent_handover_register(const char *sender, const char *path);
-int __near_agent_handover_unregister(const char *sender, const char *path);
+int __near_agent_handover_register(const char *sender, const char *path,
+					const char *carrier);
+int __near_agent_handover_unregister(const char *sender, const char *path,
+					const char *carrier);
+near_bool_t __near_agent_handover_registered(enum ho_agent_carrier carrier);
+
+struct carrier_data *__near_agent_handover_request_data(
+					enum ho_agent_carrier carrier,
+					struct carrier_data *data);
+int __near_agent_handover_push_data(enum ho_agent_carrier carrier,
+					struct carrier_data *data);
 
 int __near_agent_init(void);
 void __near_agent_cleanup(void);

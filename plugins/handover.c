@@ -30,7 +30,7 @@
 
 #include <linux/socket.h>
 
-#include <near/nfc.h>
+#include <near/nfc_copy.h>
 #include <near/types.h>
 #include <near/log.h>
 #include <near/adapter.h>
@@ -112,7 +112,7 @@ static int handover_ndef_parse(int client_fd, struct hr_ndef *ndef)
 {
 	int err;
 	GList *records;
-	struct near_ndef_message *msg;
+	struct near_ndef_message *msg = NULL;
 
 	DBG("");
 
@@ -123,30 +123,15 @@ static int handover_ndef_parse(int client_fd, struct hr_ndef *ndef)
 	}
 
 	/* call the global parse function */
-	records = near_ndef_parse_msg(ndef->ndef, ndef->cur_ptr);
+	records = near_ndef_parse_msg(ndef->ndef, ndef->cur_ptr, &msg);
 	if (records == NULL) {
 		err = -ENOMEM;
 		goto fail;
 	}
 
-	/*
-	 * If we receive a request, we should reply with a Hs but
-	 * if the initial frame is Hs (it means we initiated the
-	 * exchange with a Hr), so we have to do some actions (e.g.:
-	 * pairing with bluetooth)
-	 */
-	if (strncmp((char *) (ndef->ndef + FRAME_TYPE_OFFSET), "Hr", 2) == 0) {
-		/*
-		 * The first entry on the record list is the Hr record.
-		 * We build the Hs based on it.
-		 */
-		msg = near_ndef_prepare_handover_record("Hs", records->data,
-							NEAR_CARRIER_UNKNOWN);
-		if (msg == NULL) {
-			err = -EINVAL;
-			goto fail;
-		}
+	near_ndef_records_free(records);
 
+	if (msg) {
 		near_info("Send Hs frame");
 		err = send(client_fd, msg->data, msg->length, MSG_DONTWAIT);
 
@@ -155,8 +140,6 @@ static int handover_ndef_parse(int client_fd, struct hr_ndef *ndef)
 	} else {
 		err = 0;
 	}
-
-	near_ndef_records_free(records);
 
 	return err;
 
@@ -242,7 +225,9 @@ static near_bool_t handover_read_cfg_records(int client_fd,
 	if (ndef->missing_bytes)
 		return TRUE;	/* more bytes to come... */
 
-	ndef->extra_ndef_count--;
+	if (ndef->extra_ndef_count > 0)
+		ndef->extra_ndef_count--;
+
 	ndef->in_extra_read = TRUE;
 
 	if (ndef->extra_ndef_count == 0) {

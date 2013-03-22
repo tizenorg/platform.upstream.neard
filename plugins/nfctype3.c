@@ -30,7 +30,7 @@
 
 #include <linux/socket.h>
 
-#include <near/nfc.h>
+#include <near/nfc_copy.h>
 #include <near/plugin.h>
 #include <near/log.h>
 #include <near/types.h>
@@ -246,7 +246,7 @@ static int data_recv(uint8_t *resp, int length, void *data)
 		tag->current_block = 0;
 
 		DBG("Done reading %zd bytes at %p", data_length, nfc_data);
-		records = near_ndef_parse_msg(nfc_data, data_length);
+		records = near_ndef_parse_msg(nfc_data, data_length, NULL);
 		near_tag_add_records(tag->tag, records, tag->cb, 0);
 
 		g_free(tag);
@@ -288,7 +288,7 @@ static int data_read(struct type3_tag *tag)
 	tag->current_block = 0;
 
 	prepare_read_block(DATA_BLOCK_START + tag->current_block,
-							tag->IDm, &cmd );
+							tag->IDm, &cmd);
 
 	adapter_idx = near_tag_get_adapter_idx(tag->tag);
 
@@ -477,7 +477,6 @@ static int receive_system_code(uint8_t *resp, int length, void *data)
 	struct t3_cookie *cookie = data;
 	int err = 0;
 	struct type3_cmd cmd;
-	uint16_t system_code;
 
 	DBG("length: %d", length);
 
@@ -492,8 +491,6 @@ static int receive_system_code(uint8_t *resp, int length, void *data)
 
 	cookie->ic_type = resp[IC_TYPE_OFFSET];
 	memcpy(cookie->IDm, resp + OFS_IDM, LEN_ID);
-	system_code = ((uint16_t) (resp[length - 2])) << 8;
-	system_code |= resp[length - 1];
 
 	switch (resp[IC_TYPE_OFFSET]) {
 	case FELICA_LITE_IC_TYPE:
@@ -503,8 +500,7 @@ static int receive_system_code(uint8_t *resp, int length, void *data)
 					cookie, NULL);
 		break;
 
-	case FELICA_LITE_S_IC_TYPE:
-	case FELICA_PLUG_IC_TYPE:
+	default:
 		/* CMD POLL */
 		cmd.cmd	 = CMD_POLL;	/* POLL command */
 		cmd.data[0] = 0x12;     /* System code (NFC SC) */
@@ -750,7 +746,7 @@ static int nfctype3_write(uint32_t adapter_idx, uint32_t target_idx,
 	err = data_write(adapter_idx, target_idx, ndef, tag, cb);
 
 out_err:
-	if (cb != NULL)
+	if (cb != NULL && err < 0)
 		cb(adapter_idx, target_idx, err);
 
 	return err;

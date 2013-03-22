@@ -25,6 +25,7 @@
 #include <near/tag.h>
 
 struct near_ndef_record;
+struct carrier_data;
 
 struct near_ndef_message {
 	size_t length;
@@ -32,18 +33,13 @@ struct near_ndef_message {
 	uint8_t *data;
 };
 
-/* near_ndef_handover_carrier*/
-#define		NEAR_CARRIER_EMPTY	0x00
-#define		NEAR_CARRIER_BLUETOOTH	0x01	/* bit 0 */
-#define		NEAR_CARRIER_WIFI	0x02	/* bit 1 */
-#define		NEAR_CARRIER_UNKNOWN	0x80	/* Bit 7 */
-
 int near_ndef_count_records(uint8_t *ndef_in, size_t ndef_in_length,
 						uint8_t record_type);
 
 int near_ndef_record_length(uint8_t *ndef_in, size_t ndef_in_length);
 
-GList *near_ndef_parse_msg(uint8_t *ndef_data, size_t ndef_length);
+GList *near_ndef_parse_msg(uint8_t *ndef_data, size_t ndef_length,
+					struct near_ndef_message **reply);
 
 void near_ndef_records_free(GList *records);
 
@@ -54,12 +50,22 @@ struct near_ndef_message *near_ndef_prepare_uri_record(uint8_t identifier,
 					 uint32_t field_length, uint8_t *field);
 
 struct near_ndef_message *near_ndef_prepare_handover_record(char* type_name,
-						struct near_ndef_record *record,
-						uint8_t carriers);
+					struct near_ndef_record *record,
+					uint8_t carriers,
+					struct carrier_data *remote);
 
 struct near_ndef_message *
 near_ndef_prepare_smartposter_record(uint8_t uri_identifier,
 					uint32_t uri_field_length,
 					uint8_t *uri_field);
+
+near_bool_t near_ndef_record_cmp_id(struct near_ndef_record *rec1,
+						struct near_ndef_record *rec2);
+near_bool_t near_ndef_record_cmp_mime(struct near_ndef_record *rec1,
+						struct near_ndef_record *rec2);
+
+
+size_t near_ndef_data_length(struct near_ndef_record *data);
+uint8_t *near_ndef_data_ptr(struct near_ndef_record *data);
 
 #endif

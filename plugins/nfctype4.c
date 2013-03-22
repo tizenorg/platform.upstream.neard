@@ -31,7 +31,7 @@
 
 #include <linux/socket.h>
 
-#include <near/nfc.h>
+#include <near/nfc_copy.h>
 #include <near/plugin.h>
 #include <near/log.h>
 #include <near/types.h>
@@ -74,7 +74,7 @@
 #define T4_ALL_ACCESS		0x00
 #define T4_READ_ONLY		0xFF
 
-#define APDU_STATUS(a) (g_ntohs(*((uint16_t *)(a))))
+#define APDU_STATUS(a) near_get_be16(a)
 
 /* Tag Type 4 version ID */
 static uint8_t iso_appname_v1[] = { 0xd2, 0x76, 0x0, 0x0, 0x85, 0x01, 0x0 };
@@ -329,7 +329,7 @@ static int data_read_cb(uint8_t *resp, int length, void *data)
 
 		DBG("Done reading");
 
-		records = near_ndef_parse_msg(nfc_data, data_length);
+		records = near_ndef_parse_msg(nfc_data, data_length, NULL);
 		near_tag_add_records(cookie->tag, records, cookie->cb, 0);
 
 		return t4_cookie_release(0, cookie);
@@ -365,7 +365,7 @@ static int t4_readbin_NDEF_ID(uint8_t *resp, int length, void *data)
 
 	/* Add data to the tag */
 	err = near_tag_add_data(cookie->adapter_idx, cookie->target_idx, NULL,
-				g_ntohs(*((uint16_t *)(resp + NFC_STATUS_BYTE_LEN))));
+				near_get_be16(resp + NFC_STATUS_BYTE_LEN));
 	if (err < 0)
 		return t4_cookie_release(err, cookie);
 

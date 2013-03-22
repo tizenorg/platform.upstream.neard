@@ -30,7 +30,7 @@
 
 #include <linux/socket.h>
 
-#include <near/nfc.h>
+#include <near/nfc_copy.h>
 #include <near/plugin.h>
 #include <near/log.h>
 #include <near/types.h>

@@ -61,17 +61,11 @@ static GSList *driver_list = NULL;
 static void free_device(gpointer data)
 {
 	struct near_device *device = data;
-	GList *list;
 
 	DBG("device %p", device);
 
-	for (list = device->records; list; list = list->next) {
-		struct near_ndef_record *record = list->data;
+	near_ndef_records_free(device->records);
 
-		__near_ndef_record_free(record);
-	}
-
-	g_list_free(device->records);
 	g_free(device->path);
 	g_free(device->data);
 	g_free(device);
@@ -283,8 +277,8 @@ static DBusMessage *push_ndef(DBusConnection *conn,
 	if (err < 0)
 		goto error;
 
-	g_free(ndef);
 	g_free(ndef->data);
+	g_free(ndef);
 
 	return NULL;
 
@@ -342,6 +336,9 @@ int near_device_add_records(struct near_device *device, GList *records,
 
 	DBG("records %p", records);
 
+	near_ndef_records_free(device->records);
+	device->records = NULL;
+
 	for (list = records; list; list = list->next) {
 		record = list->data;
 
@@ -359,6 +356,11 @@ int near_device_add_records(struct near_device *device, GList *records,
 	}
 
 	__near_agent_ndef_parse_records(device->records);
+
+	near_dbus_property_changed_array(device->path,
+					NFC_DEVICE_INTERFACE, "Records",
+					DBUS_TYPE_OBJECT_PATH, append_records,
+					device);
 
 	if (cb != NULL)
 		cb(device->adapter_idx, device->target_idx, status);

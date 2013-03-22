@@ -9,7 +9,7 @@
 
 #include <linux/socket.h>
 
-#include <near/nfc.h>
+#include <near/nfc_copy.h>
 #include <near/types.h>
 #include <near/ndef.h>
 

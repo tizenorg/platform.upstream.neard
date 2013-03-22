@@ -32,7 +32,7 @@ uint16_t near_tlv_length(uint8_t *tlv)
 	if (tlv[0] == TLV_NULL || tlv[0] == TLV_END)
 		length = 0;
 	else if (tlv[1] == 0xff)
-		length = g_ntohs(*(uint16_t *)(tlv + 2));
+		length = near_get_be16(tlv + 2);
 	else
 		length = tlv[1];
 
@@ -83,7 +83,7 @@ GList *near_tlv_parse(uint8_t *tlv, size_t tlv_length)
 	records = NULL;
 	data = tlv;
 
-	while(1) {
+	while (1) {
 		t = tlv[0];
 
 		DBG("tlv 0x%x", tlv[0]);
@@ -93,7 +93,7 @@ GList *near_tlv_parse(uint8_t *tlv, size_t tlv_length)
 			DBG("NDEF found %d bytes long", near_tlv_length(tlv));
 
 			records = near_ndef_parse_msg(near_tlv_data(tlv),
-						near_tlv_length(tlv));
+						near_tlv_length(tlv), NULL);
 
 			break;
 		case TLV_END:

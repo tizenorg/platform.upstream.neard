@@ -38,11 +38,15 @@
 #define DEFAULT_ADAPTER			"DefaultAdapter"
 #define ADAPTER_REMOVED			"AdapterRemoved"
 #define DEFAULT_ADAPTER_CHANGED		"DefaultAdapterChanged"
+#define ADAPTER_PROPERTY_CHANGED	"PropertyChanged"
 #define MANAGER_PATH			"/"
 #define OOB_AGENT			"/org/neard/agent/neard_oob"
 
 #define BT_NOINPUTOUTPUT		"NoInputNoOutput"
 #define BT_DISPLAY_YESNO		"DisplayYesNo"
+
+#define DBUS_MANAGER_INTF		"org.freedesktop.DBus.ObjectManager"
+#define AGENT_REGISTER_TIMEOUT	2
 
 /* BT EIR list */
 #define EIR_UUID128_ALL		0x07 /* 128-bit UUID, all listed */
@@ -62,14 +66,7 @@
 #define BT_ADDRESS_SIZE		6
 #define COD_SIZE		3
 #define OOB_SP_SIZE		16
-
-#define get_unaligned(ptr)			\
-({						\
-	struct __attribute__((packed)) {	\
-		typeof(*(ptr)) __v;		\
-	} *__p = (typeof(__p)) (ptr);		\
-	__p->__v;				\
-})
+#define EIR_SIZE_MAX		255
 
 struct near_oob_data {
 	char *def_adapter;
@@ -95,7 +92,12 @@ struct near_oob_data {
 static DBusConnection *bt_conn;
 static struct near_oob_data bt_def_oob_data;
 
-static int bt_do_pairing(struct near_oob_data *oob);
+static guint watch;
+static guint removed_watch;
+static guint adapter_watch;
+static guint adapter_props_watch;
+
+static guint register_bluez_timer;
 
 static void __bt_eir_free(struct near_oob_data *oob)
 {
@@ -125,8 +127,6 @@ static void __bt_eir_free(struct near_oob_data *oob)
 		g_free(oob->spair_randomizer);
 		oob->spair_randomizer = NULL;
 	}
-
-
 }
 
 static void bt_eir_free(struct near_oob_data *oob)
@@ -157,7 +157,7 @@ static int bt_generic_call(DBusConnection *conn,
 
 	if (msg == NULL) {
 		near_error("Unable to allocate new D-Bus %s message", method);
-		err = -ENOMEM;
+		return -ENOMEM;
 	}
 
 	va_start(args, type);
@@ -219,13 +219,11 @@ cb_done:
 
 	dbus_message_unref(reply);
 	dbus_pending_call_unref(pending);
-
-	return;
 }
 
 static int bt_create_paired_device(DBusConnection *conn,
-				struct near_oob_data *oob,
-				const char *capabilities)
+						struct near_oob_data *oob,
+						const char *capabilities)
 {
 	const char *agent_path = OOB_AGENT;
 
@@ -237,7 +235,6 @@ static int bt_create_paired_device(DBusConnection *conn,
 			DBUS_TYPE_OBJECT_PATH, &agent_path,
 			DBUS_TYPE_STRING, &capabilities,
 			DBUS_TYPE_INVALID);
-
 }
 
 static void bt_oob_add_remote_data_cb(DBusPendingCall *pending, void *user_data)
@@ -275,12 +272,10 @@ cb_fail:
 
 	dbus_message_unref(reply);
 	dbus_pending_call_unref(pending);
-
-	return;
 }
 
 static int bt_oob_add_remote_data(DBusConnection *conn,
-				struct near_oob_data *oob)
+						struct near_oob_data *oob)
 {
 	int16_t hash_len = 16;
 	int16_t rdm_len = 16;
@@ -319,8 +314,7 @@ static int bt_do_pairing(struct near_oob_data *oob)
 
 /*
  */
-static int extract_properties(DBusMessage *reply,
-		struct near_oob_data *oob)
+static int extract_properties(DBusMessage *reply, struct near_oob_data *oob)
 {
 	char *data = NULL;
 	int idata;
@@ -423,6 +417,66 @@ fail:
 	return -ENOMEM;
 }
 
+static gboolean bt_adapter_property_changed(DBusConnection *conn,
+							DBusMessage *message,
+							void *user_data)
+{
+	DBusMessageIter iter;
+	DBusMessageIter var;
+	const char *property;
+
+	if (dbus_message_iter_init(message, &iter) == FALSE)
+		return TRUE;
+
+	dbus_message_iter_get_basic(&iter, &property);
+	dbus_message_iter_next(&iter);
+
+	if (dbus_message_iter_get_arg_type(&iter) != DBUS_TYPE_VARIANT)
+		return TRUE;
+
+	dbus_message_iter_recurse(&iter, &var);
+
+	if (g_str_equal(property, "Name") == TRUE) {
+		const char *name;
+
+		if (dbus_message_iter_get_arg_type(&var) != DBUS_TYPE_STRING)
+			return TRUE;
+
+		dbus_message_iter_get_basic(&iter, &name);
+
+		g_free(bt_def_oob_data.bt_name);
+		bt_def_oob_data.bt_name = g_strdup(name);
+
+		if (bt_def_oob_data.bt_name != NULL)
+			bt_def_oob_data.bt_name_len = strlen(name);
+		else
+			bt_def_oob_data.bt_name_len = 0;
+
+		DBG("%s: %s", property, name);
+	} else if (g_str_equal(property, "Class") == TRUE) {
+		int class;
+
+		if (dbus_message_iter_get_arg_type(&var) != DBUS_TYPE_UINT32)
+			return TRUE;
+
+		dbus_message_iter_get_basic(&var, &class);
+		bt_def_oob_data.class_of_device = class;
+
+		DBG("%s: %x", property, bt_def_oob_data.class_of_device);
+	} else if (g_str_equal(property, "Powered") == TRUE) {
+		dbus_bool_t powered;
+
+		if (dbus_message_iter_get_arg_type(&var) != DBUS_TYPE_BOOLEAN)
+			return TRUE;
+
+		dbus_message_iter_get_basic(&var, &powered);
+		bt_def_oob_data.powered = powered;
+
+		DBG("%s: %u", property, bt_def_oob_data.powered);
+	}
+
+	return TRUE;
+}
 
 /* Get default local adapter properties */
 static void bt_get_properties_cb(DBusPendingCall *pending, void *user_data)
@@ -449,6 +503,12 @@ static void bt_get_properties_cb(DBusPendingCall *pending, void *user_data)
 	else
 		DBG("Get Properties complete: %s", bt_props->def_adapter);
 
+	adapter_props_watch = g_dbus_add_signal_watch(bt_conn, NULL, NULL,
+						ADAPTER_INTF,
+						ADAPTER_PROPERTY_CHANGED,
+						bt_adapter_property_changed,
+						NULL, NULL);
+
 	/* clean */
 	dbus_message_unref(reply);
 	dbus_pending_call_unref(pending);
@@ -460,8 +520,6 @@ cb_fail:
 
 	dbus_message_unref(reply);
 	dbus_pending_call_unref(pending);
-
-	return;
 }
 
 static void bt_get_default_adapter_cb(DBusPendingCall *pending, void *user_data)
@@ -509,8 +567,6 @@ cb_fail:
 
 	dbus_message_unref(reply);
 	dbus_pending_call_unref(pending);
-
-	return;
 }
 
 static int bt_refresh_adapter_props(DBusConnection *conn, void *user_data)
@@ -622,12 +678,13 @@ static void bt_parse_eir(uint8_t *eir_data, uint16_t eir_data_len,
  * mime_properties is a bitmask and should reflect the fields found in
  * the incoming oob.
  */
-int __near_bluetooth_parse_oob_record(uint8_t version, uint8_t *bt_data,
-				uint16_t *mime_properties, near_bool_t pair)
+int __near_bluetooth_parse_oob_record(struct carrier_data *data,
+						uint16_t *mime_properties,
+						near_bool_t pair)
 {
 	struct near_oob_data *oob;
 	uint16_t bt_oob_data_size;
-	uint8_t	*ptr = bt_data;
+	uint8_t *ptr = data->data;
 	uint8_t	marker;
 	char *tmp;
 
@@ -635,7 +692,7 @@ int __near_bluetooth_parse_oob_record(uint8_t version, uint8_t *bt_data,
 
 	oob = g_try_malloc0(sizeof(struct near_oob_data));
 
-	if (version == BT_MIME_V2_1) {
+	if (data->type == BT_MIME_V2_1) {
 		/*
 		 * Total OOB data size (including size bytes)
 		 * Some implementations (e.g. Android 4.1) stores
@@ -644,15 +701,14 @@ int __near_bluetooth_parse_oob_record(uint8_t version, uint8_t *bt_data,
 		 * the NDEF forum NDEF spec define a payload length as single
 		 * byte (and the payload size IS the oob data size).
 		 */
-		bt_oob_data_size =
-			GUINT16_FROM_LE(get_unaligned((uint16_t *) bt_data));
+		bt_oob_data_size = near_get_le16(ptr);
 		if (bt_oob_data_size > 0xFF)	/* Big Endian */
 			bt_oob_data_size = GUINT16_FROM_BE(bt_oob_data_size);
 
 		bt_oob_data_size -= 2 ; /* remove oob datas size len */
 
 		/* First item: BD_ADDR (mandatory) */
-		ptr = &bt_data[2];
+		ptr = &data->data[2];
 		oob->bd_addr = g_strdup_printf("%02X:%02X:%02X:%02X:%02X:%02X",
 				ptr[5],	ptr[4], ptr[3], ptr[2], ptr[1], ptr[0]);
 
@@ -663,7 +719,7 @@ int __near_bluetooth_parse_oob_record(uint8_t version, uint8_t *bt_data,
 		if (bt_oob_data_size)
 			bt_parse_eir(ptr, bt_oob_data_size, oob,
 							mime_properties);
-	} else if (version == BT_MIME_V2_0) {
+	} else if (data->type == BT_MIME_V2_0) {
 		marker = *ptr++;	/* could be '$' */
 
 		oob->bd_addr = g_strdup_printf(
@@ -734,8 +790,8 @@ int __near_bluetooth_pair(void *data)
 
 /* This function is synchronous as oob datas change on each session */
 static int bt_sync_oob_readlocaldata(DBusConnection *conn, char *adapter_path,
-		char *spair_hash,
-		char *spair_randomizer)
+							char *spair_hash,
+							char *spair_randomizer)
 {
 	DBusMessage *message, *reply;
 	DBusError error;
@@ -790,12 +846,9 @@ done:
  * mime_props is a bitmask we use to add or not specific fields in the
  * oob frame (e.g.: OOB keys)
  * */
-uint8_t *__near_bluetooth_local_get_properties(int *bt_data_len,
-						uint16_t mime_props)
+struct carrier_data *__near_bluetooth_local_get_properties(uint16_t mime_props)
 {
-	uint8_t *bt_oob_block = NULL;
-	uint16_t bt_oob_block_size = 0;
-	int max_block_size;
+	struct carrier_data *data = NULL;
 	uint8_t offset;
 
 	char hash[OOB_SP_SIZE];
@@ -807,112 +860,96 @@ uint8_t *__near_bluetooth_local_get_properties(int *bt_data_len,
 		goto fail;
 	}
 
-	/* Prepare the BT block */
-	max_block_size = sizeof(uint16_t) +		/* stored oob size */
-			BT_ADDRESS_SIZE +
-			EIR_HEADER_LEN + bt_def_oob_data.bt_name_len +
-			EIR_HEADER_LEN + COD_SIZE;	/* class */
+	data = g_try_malloc0(sizeof(*data));
+	if (data == NULL)
+		goto fail;
 
-	/* Should we add oob pairing keys ?*/
-	if (mime_props & OOB_PROPS_SP) {
-		max_block_size += (EIR_HEADER_LEN + OOB_SP_SIZE + /* oob hash */
-				EIR_HEADER_LEN + OOB_SP_SIZE); /* oob random */
-	}
-
-	bt_oob_block_size = sizeof(uint16_t)	/* stored oob size */
+	data->size = sizeof(uint16_t)	/* stored oob size */
 			+ BT_ADDRESS_SIZE;	/* device address */
 
-	bt_oob_block = g_try_malloc0(max_block_size);
-	if (bt_oob_block == NULL)
-		goto fail;
 	offset = sizeof(uint16_t); /* Skip size...will be filled later */
 
 	/* Now prepare data frame */
-	memcpy(bt_oob_block + offset, bt_def_oob_data.bd_addr, BT_ADDRESS_SIZE);
+	memcpy(data->data + offset, bt_def_oob_data.bd_addr, BT_ADDRESS_SIZE);
 	offset += BT_ADDRESS_SIZE;
 
-	/* bt name */
-	if (bt_def_oob_data.bt_name != NULL) {
-		bt_oob_block_size += (bt_def_oob_data.bt_name_len +
-								EIR_HEADER_LEN);
-
-		bt_oob_block[offset++] = bt_def_oob_data.bt_name_len +
-								EIR_SIZE_LEN;
-		bt_oob_block[offset++] = EIR_NAME_COMPLETE; /* EIR data type */
-		memcpy(bt_oob_block + offset, bt_def_oob_data.bt_name,
-					bt_def_oob_data.bt_name_len);
-		offset += bt_def_oob_data.bt_name_len;
-	}
-
 	/* CoD */
-	bt_oob_block_size += COD_SIZE +  EIR_HEADER_LEN;
+	data->size += COD_SIZE +  EIR_HEADER_LEN;
 
-	bt_oob_block[offset++] = COD_SIZE + EIR_SIZE_LEN;
-	bt_oob_block[offset++] = EIR_CLASS_OF_DEVICE;
+	data->data[offset++] = COD_SIZE + EIR_SIZE_LEN;
+	data->data[offset++] = EIR_CLASS_OF_DEVICE;
 
-	memcpy(bt_oob_block + offset,
+	memcpy(data->data + offset,
 			(uint8_t *)&bt_def_oob_data.class_of_device, COD_SIZE);
 	offset += COD_SIZE;
 
-	/* The following data are generated dynamically
-	 * so we have to read the local oob data
-	 * */
-	/* Should we add oob pairing keys */
-	if ((mime_props & OOB_PROPS_SP) == 0)
-		goto out;
-
-	if (bt_sync_oob_readlocaldata(bt_conn, bt_def_oob_data.def_adapter,
+	/*
+	 * The following data are generated dynamically so we have to read the
+	 * local oob data. Only add OOB pairing keys if needed.
+	 */
+	if ((mime_props & OOB_PROPS_SP) != 0 &&
+			bt_sync_oob_readlocaldata(bt_conn,
+					bt_def_oob_data.def_adapter,
 					hash, random) == OOB_SP_SIZE) {
-		bt_oob_block_size += 2 * (OOB_SP_SIZE + EIR_HEADER_LEN);
+		data->size += 2 * (OOB_SP_SIZE + EIR_HEADER_LEN);
 
 		/* OOB datas */
 		if (hash != NULL) {
-			bt_oob_block[offset++] = OOB_SP_SIZE + EIR_SIZE_LEN;
-			bt_oob_block[offset++] = EIR_SP_HASH;
-			memcpy(bt_oob_block + offset, hash, OOB_SP_SIZE);
+			data->data[offset++] = OOB_SP_SIZE + EIR_SIZE_LEN;
+			data->data[offset++] = EIR_SP_HASH;
+			memcpy(data->data + offset, hash, OOB_SP_SIZE);
 			offset += OOB_SP_SIZE;
 		}
 
 		if (random != NULL) {
-			bt_oob_block[offset++] = OOB_SP_SIZE + EIR_SIZE_LEN;
-			bt_oob_block[offset++] = EIR_SP_RANDOMIZER;
-			memcpy(bt_oob_block + offset, random, OOB_SP_SIZE);
+			data->data[offset++] = OOB_SP_SIZE + EIR_SIZE_LEN;
+			data->data[offset++] = EIR_SP_RANDOMIZER;
+			memcpy(data->data + offset, random, OOB_SP_SIZE);
 			offset += OOB_SP_SIZE;
 		}
 	}
 
-out:
-	*(uint16_t *)bt_oob_block = bt_oob_block_size ;
-	*bt_data_len = bt_oob_block_size;
+	/* bt name */
+	if (bt_def_oob_data.bt_name != NULL) {
+		int name_len;
 
-	return bt_oob_block;
+		data->size += EIR_HEADER_LEN;
+
+		if (data->size + bt_def_oob_data.bt_name_len
+				> EIR_SIZE_MAX) {
+			name_len = EIR_SIZE_MAX - data->size;
+			data->data[offset++] = name_len + EIR_SIZE_LEN;
+			/* EIR data type */
+			data->data[offset++] = EIR_NAME_COMPLETE;
+		} else {
+			name_len = bt_def_oob_data.bt_name_len;
+			data->data[offset++] = name_len + EIR_SIZE_LEN;
+			/* EIR data type */
+			data->data[offset++] = EIR_NAME_SHORT;
+		}
+
+		data->size += name_len;
+		memcpy(data->data + offset, bt_def_oob_data.bt_name, name_len);
+		offset += name_len;
+	}
+
+	data->data[0] = data->size ;
+
+	if (bt_def_oob_data.powered == TRUE)
+		data->state = CPS_ACTIVE;
+	else
+		data->state = CPS_INACTIVE;
+
+	return data;
 
 fail:
-	g_free(bt_oob_block);
+	g_free(data);
 	return NULL;
 }
 
-static void bt_connect(DBusConnection *conn, void *user_data)
-{
-
-	DBG("connection %p with %p", conn, user_data);
-	if (bt_refresh_adapter_props(conn, user_data) < 0)
-		near_error("bt_get_default_adapter failed");
-
-	return;
-}
-
-static void bt_disconnect(DBusConnection *conn, void *user_data)
-{
-	DBG("%p", conn);
-
-	__bt_eir_free(user_data);
-}
-
 /* BT adapter removed handler */
-static gboolean bt_adapter_removed(DBusConnection *conn,
-					DBusMessage *message,
-					void *user_data)
+static gboolean bt_adapter_removed(DBusConnection *conn, DBusMessage *message,
+							void *user_data)
 {
 	DBusMessageIter iter;
 	struct near_oob_data *bt_props = user_data;
@@ -922,6 +959,9 @@ static gboolean bt_adapter_removed(DBusConnection *conn,
 
 	if (bt_props->def_adapter == NULL)
 		return TRUE;
+
+	g_dbus_remove_watch(bt_conn, adapter_props_watch);
+	adapter_props_watch = 0;
 
 	if (dbus_message_iter_init(message, &iter) == FALSE)
 		return TRUE;
@@ -952,6 +992,9 @@ static gboolean bt_default_adapter_changed(DBusConnection *conn,
 	if (dbus_message_iter_init(message, &iter) == FALSE)
 		return TRUE;
 
+	g_dbus_remove_watch(bt_conn, adapter_props_watch);
+	adapter_props_watch = 0;
+
 	dbus_message_iter_get_basic(&iter, &adapter_path);
 	DBG("New default adapter [%s]", adapter_path);
 
@@ -971,43 +1014,112 @@ static void bt_dbus_disconnect_cb(DBusConnection *conn, void *user_data)
 	bt_conn = NULL;
 }
 
-static guint watch;
-static guint removed_watch;
-static guint adapter_watch;
-
-static int bt_prepare_handlers(DBusConnection *conn)
+static gboolean register_bluez(gpointer user_data)
 {
-	DBG("%p", conn);
+	DBG("");
 
-	if (conn == NULL)
-		return -EIO;
+	register_bluez_timer = 0;
 
-	watch = g_dbus_add_service_watch(conn, BLUEZ_SERVICE,
-						bt_connect,
-						bt_disconnect,
-						&bt_def_oob_data, NULL);
-
-	removed_watch = g_dbus_add_signal_watch(conn, NULL, NULL, MANAGER_INTF,
+	removed_watch = g_dbus_add_signal_watch(bt_conn, NULL, NULL,
+						MANAGER_INTF,
 						ADAPTER_REMOVED,
 						bt_adapter_removed,
 						&bt_def_oob_data, NULL);
 
 
-	adapter_watch = g_dbus_add_signal_watch(conn, NULL, NULL, MANAGER_INTF,
+	adapter_watch = g_dbus_add_signal_watch(bt_conn, NULL, NULL,
+						MANAGER_INTF,
 						DEFAULT_ADAPTER_CHANGED,
 						bt_default_adapter_changed,
 						&bt_def_oob_data, NULL);
 
-	if (watch == 0 ||  removed_watch == 0 || adapter_watch == 0) {
-		near_error("Bluez event handlers failed to register.");
-		g_dbus_remove_watch(conn, watch);
-		g_dbus_remove_watch(conn, removed_watch);
-		g_dbus_remove_watch(conn, adapter_watch);
+	if (removed_watch == 0 || adapter_watch == 0) {
+		near_error("BlueZ event handlers failed to register.");
+		g_dbus_remove_watch(bt_conn, removed_watch);
+		g_dbus_remove_watch(bt_conn, adapter_watch);
 
+		return FALSE;
+	}
+
+	if (bt_refresh_adapter_props(bt_conn, user_data) < 0)
+		near_error("Failed to get BT adapter properties");
+
+	return FALSE;
+}
+
+static void bt_connect(DBusConnection *conn, void *data)
+{
+	DBG("connection %p with %p", conn, data);
+
+	if (__near_agent_handover_registered(HO_AGENT_BT) == TRUE) {
+		DBG("Agent already registered");
+		return;
+	}
+
+	/*
+	 * BlueZ 5 will register itself as HandoverAgent, give it some time
+	 * to do it before going legacy way.
+	 */
+	register_bluez_timer = g_timeout_add_seconds(AGENT_REGISTER_TIMEOUT,
+							register_bluez, data);
+}
+
+static void bt_disconnect(DBusConnection *conn, void *user_data)
+{
+	DBG("%p", conn);
+
+	/* If timer is running no BlueZ watchers were registered yet */
+	if (register_bluez_timer > 0) {
+		g_source_remove(register_bluez_timer);
+		register_bluez_timer = 0;
+		return;
+	}
+
+	__bt_eir_free(user_data);
+
+	g_dbus_remove_watch(bt_conn, removed_watch);
+	removed_watch = 0;
+
+	g_dbus_remove_watch(bt_conn, adapter_watch);
+	adapter_watch = 0;
+
+	g_dbus_remove_watch(bt_conn, adapter_props_watch);
+	adapter_props_watch = 0;
+}
+
+static int bt_prepare_handlers(DBusConnection *conn)
+{
+	if (__near_agent_handover_registered(HO_AGENT_BT) == TRUE)
+		return 0;
+
+	watch = g_dbus_add_service_watch(bt_conn, BLUEZ_SERVICE,
+						bt_connect,
+						bt_disconnect,
+						&bt_def_oob_data, NULL);
+	if (watch == 0) {
+		near_error("BlueZ service watch handler failed to register.");
+		g_dbus_remove_watch(bt_conn, watch);
 		return -EIO;
 	}
 
 	return 0;
+}
+
+void __near_bluetooth_legacy_start(void)
+{
+	DBG("");
+
+	bt_prepare_handlers(bt_conn);
+}
+
+void __near_bluetooth_legacy_stop(void)
+{
+	DBG("");
+
+	g_dbus_remove_watch(bt_conn, watch);
+	watch = 0;
+
+	bt_disconnect(bt_conn, &bt_def_oob_data);
 }
 
 /* Bluetooth exiting function */
@@ -1018,15 +1130,9 @@ void __near_bluetooth_cleanup(void)
 	if (bt_conn == NULL)
 		return;
 
-	g_dbus_remove_watch(bt_conn, watch);
-	g_dbus_remove_watch(bt_conn, removed_watch);
-	g_dbus_remove_watch(bt_conn, adapter_watch);
+	__near_bluetooth_legacy_stop();
 
 	dbus_connection_unref(bt_conn);
-
-	__bt_eir_free(&bt_def_oob_data);
-
-	return;
 }
 
 /*

@@ -31,7 +31,7 @@
 
 #include <linux/socket.h>
 
-#include <near/nfc.h>
+#include <near/nfc_copy.h>
 #include <near/plugin.h>
 #include <near/log.h>
 #include <near/types.h>
@@ -53,6 +53,7 @@ struct p2p_data {
 	near_device_io_cb cb;
 	int fd;
 	guint watch;
+	struct p2p_data *server;
 
 	GList *client_list;
 };
@@ -67,6 +68,7 @@ static gboolean p2p_client_event(GIOChannel *channel, GIOCondition condition,
 
 	if (condition & (G_IO_NVAL | G_IO_ERR | G_IO_HUP)) {
 		int err;
+		struct p2p_data *server_data = client_data->server;
 
 		if (client_data->watch > 0)
 			g_source_remove(client_data->watch);
@@ -82,6 +84,13 @@ static gboolean p2p_client_event(GIOChannel *channel, GIOCondition condition,
 
 		near_error("%s client channel closed",
 					client_data->driver->name);
+
+		if (server_data)
+			server_data->client_list =
+				g_list_remove(server_data->client_list,
+								client_data);
+
+		g_free(client_data);
 
 		return FALSE;
 	}
@@ -183,6 +192,7 @@ static gboolean p2p_listener_event(GIOChannel *channel, GIOCondition condition,
 	client_data->target_idx = client_addr.target_idx;
 	client_data->fd = client_fd;
 	client_data->cb = server_data->cb;
+	client_data->server = server_data;
 
 	client_channel = g_io_channel_unix_new(client_fd);
 	g_io_channel_set_close_on_unref(client_channel, TRUE);
@@ -191,6 +201,8 @@ static gboolean p2p_listener_event(GIOChannel *channel, GIOCondition condition,
 				G_IO_IN | G_IO_HUP | G_IO_NVAL | G_IO_ERR,
 				p2p_client_event,
 				client_data);
+
+	g_io_channel_unref(client_channel);
 
 	server_data->client_list = g_list_append(server_data->client_list, client_data);
 
@@ -268,14 +280,19 @@ static int p2p_bind(struct near_p2p_driver *driver, uint32_t adapter_idx,
 
 static int p2p_listen(uint32_t adapter_idx, near_device_io_cb cb)
 {
-	int err = -1;
+	int err = -1, bind_err;
 	GSList *list;
 
 	for (list = driver_list; list != NULL; list = list->next) {
 		struct near_p2p_driver *driver = list->data;
 
-		if (p2p_bind(driver, adapter_idx, cb) == 0)
+		bind_err = p2p_bind(driver, adapter_idx, cb);
+		if (bind_err == 0) {
 			err = 0;
+		} else if (bind_err == -EPROTONOSUPPORT) {
+			near_error("LLCP is not supported");
+			return bind_err;
+		}
 	}
 
 	return err;
@@ -334,12 +351,18 @@ static int p2p_push(uint32_t adapter_idx, uint32_t target_idx,
 		 * the handover service and fallback to SNEP on connect fail.
 		 */
 		fd = p2p_connect(adapter_idx, target_idx, ndef, cb, driver);
-		if (fd < 0)
-			return  p2p_push(adapter_idx, target_idx, ndef,
-				(char *) driver->fallback_service_name, cb);
-		else
+		if (fd < 0) {
+			if (driver->fallback_service_name != NULL)
+				return  p2p_push(adapter_idx, target_idx, ndef,
+					(char *) driver->fallback_service_name,
+					cb);
+			else
+				return -1;
+
+		} else if (driver->push != NULL) {
 			return driver->push(fd, adapter_idx, target_idx,
 					ndef, cb);
+		}
 	}
 
 	return -1;
@@ -374,6 +397,7 @@ static int p2p_init(void)
 
 	npp_init();
 	snep_init();
+	snep_validation_init();
 	handover_init();
 
 	return near_device_driver_register(&p2p_driver);
@@ -386,6 +410,7 @@ static void p2p_exit(void)
 	g_list_free_full(server_list, free_server_data);
 
 	snep_exit();
+	snep_validation_exit();
 	npp_exit();
 	handover_exit();
 

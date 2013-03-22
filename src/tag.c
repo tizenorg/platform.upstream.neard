@@ -527,8 +527,8 @@ void __near_tag_append_records(struct near_tag *tag, DBusMessageIter *iter)
 
 static enum near_tag_sub_type get_tag_type2_sub_type(uint8_t sel_res)
 {
-	switch(sel_res) {
-	case 0x00 :
+	switch (sel_res) {
+	case 0x00:
 		return NEAR_TAG_NFC_T2_MIFARE_ULTRALIGHT;
 	case 0x08:
 		return NEAR_TAG_NFC_T2_MIFARE_CLASSIC_1K;
@@ -538,7 +538,7 @@ static enum near_tag_sub_type get_tag_type2_sub_type(uint8_t sel_res)
 		return NEAR_TAG_NFC_T2_MIFARE_CLASSIC_4K;
 	case 0x20:
 		return NEAR_TAG_NFC_T2_MIFARE_DESFIRE;
-	case 0x28 :
+	case 0x28:
 		return NEAR_TAG_NFC_T2_JCOP30;
 	case 0x38:
 		return NEAR_TAG_NFC_T2_MIFARE_4K_EMUL;
@@ -577,7 +577,7 @@ static void set_tag_type(struct near_tag *tag,
 
 		DBG("proto 0x%x", proto);
 
-		switch(proto) {
+		switch (proto) {
 		case NFC_TAG_A_TYPE2:
 			tag->type = NFC_PROTO_MIFARE;
 			tag->sub_type = get_tag_type2_sub_type(sel_res);
@@ -805,6 +805,11 @@ int near_tag_add_records(struct near_tag *tag, GList *records,
 
 	__near_agent_ndef_parse_records(tag->records);
 
+	near_dbus_property_changed_array(tag->path,
+					NFC_TAG_INTERFACE, "Records",
+					DBUS_TYPE_OBJECT_PATH, append_records,
+					tag);
+
 	if (cb != NULL)
 		cb(tag->adapter_idx, tag->target_idx, status);
 
@@ -836,6 +841,11 @@ uint8_t *near_tag_get_data(struct near_tag *tag, size_t *data_length)
 	*data_length = tag->data_length;
 
 	return tag->data;
+}
+
+size_t near_tag_get_data_length(struct near_tag *tag)
+{
+	return tag->data_length;
 }
 
 uint32_t near_tag_get_adapter_idx(struct near_tag *tag)
