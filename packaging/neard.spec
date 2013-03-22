@@ -1,6 +1,6 @@
 Name:       neard-tizen
 Summary:    Near Field Communication Manager
-Version:    0.8
+Version:    0.10
 Release:    1
 Group:      System/Networking
 License:    GPLv2
@@ -84,7 +84,8 @@ systemctl daemon-reload
 
 %files
 %doc COPYING
-/usr/libexec/neard
+%{_mandir}/*
+/usr/libexec/nfc/neard
 /etc/dbus-1/system.d/org.neard.conf
 /etc/rc.d/init.d/*
 %{_libdir}/systemd/system/neard.service

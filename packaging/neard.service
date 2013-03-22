@@ -5,7 +5,7 @@ Before=network.target
 [Service]
 Type=dbus
 BusName=org.neard
-ExecStart=/usr/libexec/neard -n
+ExecStart=/usr/libexec/nfc/neard -n
 
 [Install]
 WantedBy=multi-user.target
