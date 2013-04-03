@@ -678,40 +678,17 @@ static char *action_to_string(uint8_t action)
 	}
 }
 
-/**
- * @brief returns record type for external type
- * Validate type and type length and returns
- * type.
- *
- * @param type    Type name in hex format
- * @param type_lenth Type name length
- *
- * @return enum record type
- */
-
 static enum record_type get_external_record_type(uint8_t *type,
 						size_t type_length)
 {
 	DBG("");
 
 	if (strncmp((char *) type, BT_MIME_STRING_2_0,
-					strlen(BT_MIME_STRING_2_0)) == 0)
+					sizeof(BT_MIME_STRING_2_0) - 1) == 0)
 		return RECORD_TYPE_MIME_TYPE;
 	else
 		return RECORD_TYPE_UNKNOWN;
 }
-
-/**
- * @brief returns record type
- * Validate type name format, type and type length and returns
- * type.
- *
- * @param tnf     TypeNameFormat value
- * @param type    Type name in hex format
- * @param type_lenth Type name length
- *
- * @return enum record type
- */
 
 static enum record_type get_record_type(enum record_tnf tnf,
 				uint8_t *type, size_t type_length)
@@ -855,23 +832,12 @@ static uint8_t validate_record_begin_and_end_bits(uint8_t *msg_mb,
 	return 0;
 }
 
-/**
- * @brief Parse the ndef record header.
- *
+/*
  * Parse the ndef record header and cache the begin, end, chunkflag,
  * short-record and type-name-format bits. ID length and field, record
  * type, payload length and offset (where payload byte starts in input
  * parameter). Validate offset for every step forward against total
  * available length.
- *
- * @note : Caller responsibility to free the memory.
- *
- * @param[in] rec      ndef byte stream
- * @param[in] offset   record header offset
- * @param[in] length   total length in byte stream
- *
- * @return struct near_ndef_record_header * RecordHeader on Success
- *                                          NULL   on Failure
  */
 static struct near_ndef_record_header *parse_record_header(uint8_t *rec,
 					uint32_t offset, uint32_t length)
@@ -983,18 +949,6 @@ fail:
 	return NULL;
 }
 
-/**
- * @brief Parse the Text record payload
- *
- * Parse the Text payload.
- *
- * @param[in] payload NDEF pointer set to record payload first byte
- * @param[in] length  payload_len
- *
- * @return struct near_ndef_text_payload * Payload on Success
- *                                       NULL   on Failure
- */
-
 static struct near_ndef_text_payload *
 parse_text_payload(uint8_t *payload, uint32_t length)
 {
@@ -1058,18 +1012,6 @@ fail:
 	return NULL;
 }
 
-/**
- * @brief Parse the URI record payload
- *
- * Parse the URI payload.
- *
- * @param[in] payload NDEF pointer set to record payload first byte
- * @param[in] length  Payload length
- *
- * @return struct near_ndef_uri_payload * payload on Success
- *                                       NULL   on Failure
- */
-
 static struct near_ndef_uri_payload *
 parse_uri_payload(uint8_t *payload, uint32_t length)
 {
@@ -1122,16 +1064,10 @@ fail:
 	return NULL;
 }
 
-/**
- * @brief Validate titles records language code in Smartposter.
+/*
+ * Validate titles records language code in Smartposter.
  * There must not be two or more records with the same language identifier.
- *
- * @param[in] GSList *  list of title records (struct near_ndef_text_payload *)
- *
- * @return Zero on success
- *         Negative value on failure
  */
-
 static int8_t validate_language_code_in_sp_record(GSList *titles)
 {
 	uint8_t i, j, length;
@@ -1162,21 +1098,6 @@ static int8_t validate_language_code_in_sp_record(GSList *titles)
 
 	return 0;
 }
-
-/**
- * @brief Parse the smart poster record payload.
- *
- * Parse the smart poster payload and cache the
- * data in respective fields of smart poster structure.
- *
- * @note Caller responsibility to free the memory.
- *
- * @param[in] payload NDEF pointer set to record payload first byte
- * @param[in] length Record payload length
- *
- * @return struct near_ndef_sp_payload * Record on Success
- *                                      NULL   on Failure
- */
 
 static struct near_ndef_sp_payload *
 parse_sp_payload(uint8_t *payload, uint32_t length)
@@ -1492,28 +1413,7 @@ static uint8_t near_ndef_set_mb_me(uint8_t *hdr, near_bool_t first_rec,
 	return near_ndef_set_me(hdr, last_rec);
 }
 
-/**
- * @brief Allocates ndef message structure
- *
- * Allocates ndef message structure and fill message header byte,
- * type length byte, payload length and type name. Offset is payload
- * first byte (caller of this API can start filling their payload
- * from offset value).
- *
- * @note : caller responsibility to free the input and output
- *         parameters memory.
- *
- * @param[in] type_name    Record type name
- * @param[in] payload_len  Record payload length
- * @param[in] payload_id   Record payload id string
- * @param[in] payload_id_len  Record payload id string length
- * @param[in] tnf          Type name format to set
- * @param[in] first_rec    Message begin (MB) flag
- * @param[in] last_rec     Message end (ME) flag
- *
- * @return struct near_ndef_message * - Success
- *         NULL - Failure
- */
+/* Caller should put own payload starting from offset value */
 static struct near_ndef_message *ndef_message_alloc_complete(char *type_name,
 		uint32_t payload_len,
 		char *payload_id,
@@ -1623,8 +1523,6 @@ fail:
 }
 
 /*
- *  @brief Allocates ndef message structure
- *
  *  This is a wrapper to ndef_message_alloc, as, in most cases,
  *  there's no payload id, and MB=TRUE and ME=TRUE. Default type name format
  *  is also set to RECORD_TNF_WELLKNOWN
@@ -1776,21 +1674,15 @@ static int near_ndef_prepare_ac_and_cfg_records(enum handover_carrier carrier,
 					struct near_ndef_mime_payload *mime,
 					struct carrier_data *remote_carrier)
 {
-	struct carrier_data *local_carrier = NULL;
+	struct carrier_data *local_carrier;
 	char cdr;
 	char *mime_type, *carrier_string;
 	uint16_t prop;
-	int err;
 
 	DBG("");
 
 	if (ac == NULL || cfg == NULL)
 		return -EINVAL;
-
-	/* to be safe side */
-	*ac = NULL;
-	*cfg = NULL;
-	carrier_string = NULL;
 
 	switch (carrier) {
 	case NEAR_CARRIER_BLUETOOTH:
@@ -1818,40 +1710,29 @@ static int near_ndef_prepare_ac_and_cfg_records(enum handover_carrier carrier,
 
 	case NEAR_CARRIER_EMPTY:
 	case NEAR_CARRIER_UNKNOWN:
-		carrier_string = "Unkknown";
-		err = -EINVAL;
-		goto fail;
+	default:
+		return -EINVAL;
 	}
 
 	if (local_carrier == NULL) {
 		DBG("Unable to retrieve local carrier %s data", carrier_string);
-		err = -ESRCH;
-		goto fail;
+		return -ESRCH;
 	}
 
 	*cfg = near_ndef_prepare_cfg_message(mime_type, local_carrier->data,
 						local_carrier->size, cdr, 1);
-	if (*cfg == NULL) {
-		err = -ENOMEM;
-		goto fail;
-	}
-
 	*ac = near_ndef_prepare_ac_message(local_carrier->state, cdr);
-	if (*ac == NULL) {
-		err = -EINVAL;
-		goto fail;
-	}
 
 	g_free(local_carrier);
+
+	if (*cfg == NULL || *ac == NULL) {
+		free_ndef_message(*ac);
+		free_ndef_message(*cfg);
+
+		return -ENOMEM;
+	}
 
 	return 0;
-
-fail:
-	g_free(local_carrier);
-	free_ndef_message(*ac);
-	free_ndef_message(*cfg);
-
-	return err;
 }
 
 static void free_ndef_list(gpointer data)
@@ -1913,7 +1794,7 @@ static void copy_ac_records(struct near_ndef_message *ho, GList *acs)
 		ac = temp->data;
 		memcpy(ho->data + ho->offset, ac->data, ac->length);
 		/*
-		 * AC records are part of handover message payoad,
+		 * AC records are part of handover message payload,
 		 * so modifying offset.
 		 */
 		ho->offset += ac->length;
@@ -1937,7 +1818,7 @@ static void copy_cfg_records(struct near_ndef_message *ho, GList *cfgs)
 		memcpy(ho->data + offset, cfg->data, cfg->length);
 		/*
 		 * Configuration records (e.g. bt or wifi) records are not part
-		 * of handover payoad, they are consecutive ndef msgs. So
+		 * of handover payload, they are consecutive ndef msgs. So
 		 * here we are not modifying ho->offset.
 		 */
 		offset += cfg->length;
@@ -2007,7 +1888,7 @@ static struct near_ndef_message *near_ndef_prepare_hs_message(
 	DBG("");
 
 	/*
-	 * Preparing empty Hs message incase remote devices has zero
+	 * Preparing empty Hs message in case remote devices has zero
 	 * alternative carries or unknown mime types or unknown
 	 * configuration data.
 	 */
@@ -2037,7 +1918,7 @@ static struct near_ndef_message *near_ndef_prepare_hs_message(
 	}
 
 	if (g_list_length(ac_msgs) == 0) {
-		DBG("no alterative carriers, so preparing empty Hs message");
+		DBG("no alternative carriers, so preparing empty Hs message");
 		return near_ndef_prepare_empty_hs_message();
 	}
 
@@ -2130,7 +2011,7 @@ static struct near_ndef_message *near_ndef_prepare_hr_message(GSList *carriers)
 
 	DBG("");
 
-	/* Hr message should have atleast one carrier */
+	/* Hr message should have at least one carrier */
 	while (carriers) {
 		ret = near_ndef_prepare_ac_and_cfg_records(
 				string2carrier(carriers->data),
@@ -2144,7 +2025,7 @@ static struct near_ndef_message *near_ndef_prepare_hr_message(GSList *carriers)
 	}
 
 	if (g_list_length(ac_msgs) == 0) {
-		DBG("no alterative carriers to prepare Hr message");
+		DBG("no alternative carriers to prepare Hr message");
 		goto fail;
 	}
 
@@ -2265,10 +2146,9 @@ fail:
 }
 
 /*
- * @brief Parse the Handover request record payload
- * This function will parse an Hr record payload, retrieving sub records
- * like (ac, cr, er) but it  will also get the associated
- * ndefs (eg: handover carrier record, mime type for BT)
+ * This function will parse an handover record payload, retrieving sub records
+ * like (ac, cr, er) but it  will also get the associated ndefs
+ * (eg: handover carrier record, mime type for BT)
  * In a handover frame, only the following types are expected:
  *     RECORD_TYPE_WKT_HANDOVER_CARRIER:
  *     RECORD_TYPE_WKT_COLLISION_RESOLUTION
@@ -2445,7 +2325,7 @@ static struct near_ndef_ho_payload *parse_ho_payload(enum record_type rec_type,
 	}
 
 	/*
-	 * Incase of multiple carriers, handover with any carrier
+	 * In case of multiple carriers, handover with any carrier
 	 * gets done then leave the loop.
 	 */
 	if (action == TRUE) {
@@ -2591,16 +2471,6 @@ uint8_t *near_ndef_data_ptr(struct near_ndef_record *rec)
 		return rec->data;
 }
 
-/**
- * @brief Parse message represented by bytes block
-GList *near_ndef_parse(uint8_t *ndef_data, size_t ndef_length,
-					struct near_ndef_message **reply)
- *
- * @param[in] ndef_data   pointer on data representing ndef message
- * @param[in] ndef_length size of ndef_data
- * @param[out]		  records list, contains all the records
- *					from parsed message
- */
 GList *near_ndef_parse_msg(uint8_t *ndef_data, size_t ndef_length,
 				struct near_ndef_message **reply)
 {
@@ -2760,11 +2630,9 @@ void near_ndef_records_free(GList *records)
 }
 
 /*
- * @brief Compute an NDEF record length
- *
- * Would compute ndef records length, even though the submitted frame
- * is incomplete. This code is used in the handover read function, as
- * we have to "guess" the final frame size.
+ * Compute ndef records length, even though the submitted frame is incomplete.
+ * This code is used in the handover read function, as we have to "guess" the
+ * final frame size.
  *
  * Message size for SR=1 is:
  *  1 : ndef rec header (offset 0)
@@ -2879,23 +2747,7 @@ fail:
 	return err;
 }
 
-/**
- * @brief Prepare Text ndef record
- *
- * Prepare text ndef record with provided input data and return
- * ndef message structure (length and byte stream) in success or
- * NULL in failure case.
- *
- * @note : caller responsibility to free the input and output
- *         parameters memory.
- *
- * @param[in] encoding      Encoding (UTF-8 | UTF-16)
- * @param[in] language_code Language Code
- * @param[in] text          Actual text
- *
- * @return struct near_ndef_message * - Success
- *         NULL - Failure
- */
+/* Possible encoding "UTF-8" or "UTF-16" */
 struct near_ndef_message *near_ndef_prepare_text_record(char *encoding,
 						char *language_code, char *text)
 {
@@ -2949,23 +2801,6 @@ fail:
 	return NULL;
 }
 
-/**
- * @brief Prepare URI ndef record
- *
- * Prepare uri ndef record with provided input data and return
- * ndef message structure (length and byte stream) in success or
- * NULL in failure case.
- *
- * @note : caller responsibility to free the input and output
- *         parameters memory.
- *
- * @param[in] identifier    URI Identifier
- * @param[in] field_length  URI field length
- * @param[in] field         URI field
- *
- * @return struct near_ndef_message * - Success
- *         NULL - Failure
- */
 struct near_ndef_message *near_ndef_prepare_uri_record(uint8_t identifier,
 					uint32_t field_length, uint8_t *field)
 {
@@ -3005,23 +2840,6 @@ fail:
 	return NULL;
 }
 
-/**
- * @brief Prepare Smartposter ndef record with mandatory URI fields.
- *
- * Prepare smartposter ndef record with provided input data and
- * return ndef message structure (length and byte stream) in success or
- * NULL in failure case.
- *
- * @note : caller responsibility to free the input and output
- *         parameters memory.
- *
- * @param[in] uri_identfier
- * @param[in] uri_field_length
- * @param[in] uri_field
- *
- * @return struct near_ndef_message * - Success
- *         NULL - Failure
- */
 struct near_ndef_message *
 near_ndef_prepare_smartposter_record(uint8_t uri_identifier,
 					uint32_t uri_field_length,

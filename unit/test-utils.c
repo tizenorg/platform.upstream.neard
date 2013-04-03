@@ -1,8 +1,7 @@
 /*
+ *  neard - Near Field Communication manager
  *
- *  Near Field Communication nfctool
- *
- *  Copyright (C) 2012  Intel Corporation. All rights reserved.
+ *  Copyright (C) 2013 Intel Corporation. All rights reserved.
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License version 2 as
@@ -19,18 +18,23 @@
  *
  */
 
-#ifndef __SNIFFER_H
-#define __SNIFFER_H
+#include "test-utils.h"
 
-#ifndef AF_NFC
-#define AF_NFC 39
-#endif
+void test_ndef_free_record(struct near_ndef_record *record)
+{
+	g_free(record->header);
+	g_free(record->type);
+	g_free(record->data);
+	g_free(record);
+}
 
-int sniffer_init(void);
+struct near_ndef_message *test_ndef_create_test_record(const char *str)
+{
+	struct near_ndef_message *ndef;
 
-void sniffer_cleanup(void);
+	ndef = near_ndef_prepare_text_record("UTF-8", "en-US", (char *) str);
+	g_assert(ndef);
+	g_assert(ndef->data);
 
-void sniffer_print_hexdump(FILE *file, guint8 *data, guint32 len,
-			   gchar *line_prefix, gboolean print_len);
-
-#endif /* __SNIFFER_H */
+	return ndef;
+}
