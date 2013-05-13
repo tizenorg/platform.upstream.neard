@@ -144,6 +144,15 @@ static void polling_changed(struct near_adapter *adapter)
 					DBUS_TYPE_BOOLEAN, &adapter->polling);
 }
 
+static void powered_changed(struct near_adapter *adapter)
+{
+
+	near_dbus_property_changed_basic(adapter->path,
+					NFC_ADAPTER_INTERFACE, "Powered",
+					DBUS_TYPE_BOOLEAN, &adapter->powered);
+}
+
+
 static void rf_mode_changed(struct near_adapter *adapter)
 {
 	const char *rf_mode = rf_mode_to_string(adapter);
@@ -419,6 +428,7 @@ static DBusMessage *set_property(DBusConnection *conn,
 		}
 
 		adapter->powered = powered;
+		powered_changed(adapter);
 	} else {
 		return __near_error_invalid_property(msg);
 	}
