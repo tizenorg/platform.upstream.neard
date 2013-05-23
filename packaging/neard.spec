@@ -52,7 +52,7 @@ Scripts for testing neard and its functionality
 		--enable-nfctype2=builtin \
 		--enable-nfctype3=builtin \
 		--enable-nfctype4=builtin \
-		--disable-p2p \
+		--enable-p2p=builtin \
 		--enable-test
 
 make %{?jobs:-j%jobs}
