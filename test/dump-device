@@ -5,6 +5,14 @@ import dbus
 
 bus = dbus.SystemBus()
 
+def extract_ndef(list):
+	val = "["
+	for i in list:
+		val += " 0x%x" % i
+	val += " ]"
+
+	return val
+
 def extract_record(key, list):
 	for i in list:
 		record = dbus.Interface(bus.get_object("org.neard", i),
@@ -21,8 +29,11 @@ device = dbus.Interface(bus.get_object("org.neard", sys.argv[1]),
 						"org.neard.Device")
 
 properties = device.GetProperties()
+raw_ndef = device.DumpRawNDEF()
 
 print "[ %s ]" % (sys.argv[1])
+
+print "        Raw NDEF = %s" % (extract_ndef(raw_ndef))
 
 for key in properties.keys():
     if key in ["Records"]:
