@@ -1,0 +1,8 @@
+Change-Id: I99fd1ed0d44c9c74ed8302c24680159186da444c
+Verified+1: Junfeng Dong <junfeng.dong@intel.com>
+Code-Review+2: Anas Nashif <anas.nashif@intel.com>
+Submitted-by: Anas Nashif <anas.nashif@intel.com>
+Submitted-at: Wed, 19 Jun 2013 06:43:34 -0700
+Reviewed-on: https://review.tizen.org/gerrit/4082
+Project: platform/core/connectivity/neard
+Branch: refs/heads/tizen
