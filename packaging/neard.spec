@@ -7,7 +7,6 @@ License:    GPLv2
 Source0:    http://www.kernel.org/pub/linux/network/nfc/neard-%{version}.tar.bz2
 Source1:    init
 Source2:    neard.service
-Requires(post): /bin/ln
 BuildRequires:  pkgconfig(glib-2.0)
 BuildRequires:  pkgconfig(dbus-1)
 BuildRequires:  pkgconfig(libnl-2.0)
@@ -72,7 +71,6 @@ install -d %{buildroot}%{_libdir}/systemd/system/network.target.wants/
 ln -s ../neard.service %{buildroot}%{_libdir}/systemd/system/network.target.wants/neard.service
 
 %post
-ln -sf ../init.d/neard /etc/rc.d/rc3.d/S64neard
 systemctl daemon-reload
 systemctl restart neard.service
 
