@@ -7,7 +7,7 @@ License:    GPLv2
 Source0:    http://www.kernel.org/pub/linux/network/nfc/neard-%{version}.tar.bz2
 Source1:    init
 Source2:    neard.service
-Requires(post): /bin/ln
+Requires(post): /usr/bin/ln
 BuildRequires:  pkgconfig(glib-2.0)
 BuildRequires:  pkgconfig(dbus-1)
 BuildRequires:  pkgconfig(libnl-2.0)
