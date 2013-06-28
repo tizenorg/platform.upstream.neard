@@ -7,6 +7,7 @@ License:    GPLv2
 Source0:    http://www.kernel.org/pub/linux/network/nfc/neard-%{version}.tar.bz2
 Source1:    init
 Source2:    neard.service
+Source1001: 	neard.manifest
 BuildRequires:  pkgconfig(glib-2.0)
 BuildRequires:  pkgconfig(dbus-1)
 BuildRequires:  pkgconfig(libnl-2.0)
@@ -41,6 +42,7 @@ Scripts for testing neard and its functionality
 
 %prep
 %setup -q
+cp %{SOURCE1001} .
 
 %build
 ./bootstrap
@@ -81,6 +83,7 @@ systemctl stop neard.service
 systemctl daemon-reload
 
 %files
+%manifest %{name}.manifest
 %doc COPYING
 %{_mandir}/*
 /usr/libexec/nfc/neard
@@ -90,9 +93,11 @@ systemctl daemon-reload
 %{_libdir}/systemd/system/network.target.wants/neard.service
 
 %files devel
+%manifest %{name}.manifest
 %{_includedir}/near/*.h
 %{_libdir}/pkgconfig/*.pc
 
 %files test
+%manifest %{name}.manifest
 %defattr(-,root,root,-)
 %{_libdir}/neard/test/*
