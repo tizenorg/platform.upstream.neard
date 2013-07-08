@@ -238,6 +238,8 @@ static char *sn_from_message(DBusMessage *msg)
 				return NEAR_DEVICE_SN_HANDOVER;
 			else if (g_strcmp0(value, "MIME") == 0)
 				return NEAR_DEVICE_SN_SNEP;
+			else if (g_strcmp0(value, "Raw") == 0)
+				return NEAR_DEVICE_SN_SNEP;
 			else
 				return NULL;
 
@@ -290,6 +292,32 @@ error:
 	return __near_error_failed(msg, -err);
 }
 
+static DBusMessage *dump_raw_ndef(DBusConnection *conn,
+				DBusMessage *msg, void *data)
+{
+	struct near_device *device = data;
+	DBusMessage *reply;
+	DBusMessageIter iter, array;
+
+	DBG("");
+
+	reply = dbus_message_new_method_return(msg);
+	if (reply == NULL)
+		return NULL;
+
+	dbus_message_iter_init_append(reply, &iter);
+
+	dbus_message_iter_open_container(&iter, DBUS_TYPE_ARRAY,
+						DBUS_TYPE_BYTE_AS_STRING,
+						&array);
+
+	__near_ndef_append_records(&array, device->records);
+
+	dbus_message_iter_close_container(&iter, &array);
+
+	return reply;
+}
+
 static const GDBusMethodTable device_methods[] = {
 	{ GDBUS_METHOD("GetProperties",
 				NULL, GDBUS_ARGS({"properties", "a{sv}"}),
@@ -299,6 +327,9 @@ static const GDBusMethodTable device_methods[] = {
 				NULL, set_property) },
 	{ GDBUS_ASYNC_METHOD("Push", GDBUS_ARGS({"attributes", "a{sv}"}),
 							NULL, push_ndef) },
+	{ GDBUS_METHOD("DumpRawNDEF",
+				NULL, GDBUS_ARGS({"NDEF", "ay"}),
+				dump_raw_ndef) },
 	{ },
 };
 
