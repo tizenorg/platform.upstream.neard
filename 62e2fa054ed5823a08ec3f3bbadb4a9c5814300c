@@ -1,0 +1,8 @@
+Change-Id: I62e2fa054ed5823a08ec3f3bbadb4a9c5814300c
+Code-Review+2: Ryan Ware <ware@linux.intel.com>
+Verified+1: Ryan Ware <ware@linux.intel.com>
+Submitted-by: Ryan Ware <ware@linux.intel.com>
+Submitted-at: Thu, 11 Jul 2013 08:33:27 -0700
+Reviewed-on: https://review.tizen.org/gerrit/5635
+Project: platform/upstream/neard
+Branch: refs/heads/tizen
