@@ -3536,6 +3536,59 @@ static struct near_ndef_message *near_ndef_prepare_mime_payload_record(
 	return mime;
 }
 
+#define DE_AUTHENTICATION_TYPE 0x1003
+#define DE_NETWORK_KEY 0x1027
+#define DE_SSID 0x1045
+static void parse_wsc_oob(guint8 *oob_data, guint32 oob_length,
+					char **ssid, char **passphrase)
+{
+	guint32 offset = 0;
+	guint16 de_length, de_type;
+	guint16 auth_type;
+
+	while (offset < oob_length) {
+		de_type = near_get_be16(oob_data + offset);
+		de_length = near_get_be16(oob_data + offset + 2);
+
+		switch(de_type) {
+		case DE_AUTHENTICATION_TYPE:
+			auth_type = near_get_be16(oob_data + offset + 4);
+			DBG("WSC Authentication Type: 0x%02x",
+			    auth_type);
+			break;
+
+		case DE_SSID:
+			*ssid = g_try_malloc0(de_length + 1);
+			if (!*ssid)
+				break;
+
+			g_snprintf(*ssid, de_length + 1,
+					"%s", oob_data + offset + 4);
+
+			DBG("SSID: %s", *ssid);
+			break;
+
+		case DE_NETWORK_KEY:
+			*passphrase = g_try_malloc0(de_length + 1);
+			if (!*passphrase)
+				break;
+
+			g_snprintf(*passphrase, de_length + 1,
+					"%s", oob_data + offset + 4);
+
+			DBG("Passphrase: %s", *passphrase);
+			break;
+
+		default:
+			DBG("Unknown Data Element");
+			break;
+
+		}
+
+		offset += 4 + de_length;
+	}
+}
+
 static struct near_ndef_message *build_mime_record(DBusMessage *msg)
 {
 	DBusMessageIter iter, arr_iter;
@@ -3592,6 +3645,31 @@ static struct near_ndef_message *build_mime_record(DBusMessage *msg)
 				g_free(carrier);
 
 				return mime;
+			} else if (g_strcmp0(mime_str, "x/nfctl") == 0) {
+				struct carrier_data *carrier;
+				char *ssid = NULL, *passphrase = NULL;
+				char payload[128];
+
+				carrier = __near_agent_handover_request_data(
+							HO_AGENT_WIFI, NULL);
+				if (!carrier)
+					return NULL;
+
+				parse_wsc_oob(carrier->data, carrier->size,
+							&ssid, &passphrase);
+				if (!ssid || !passphrase)
+					return NULL;
+
+				g_snprintf(payload, 128,
+					"enZ:wifi association;C:I4:%s:2:%s",
+					ssid, passphrase);
+				g_free(ssid);
+				g_free(passphrase);
+
+				DBG("payload %s", payload);
+
+				return near_ndef_prepare_mime_payload_record(
+					mime_str, payload, strlen(payload));
 			} else {
 				/*
 				 * Expect data is set in the Payload field of

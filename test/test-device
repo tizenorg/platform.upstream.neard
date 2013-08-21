@@ -33,6 +33,7 @@ def usage():
 	print "e.g. < %s push /org/neard/nfc0/device0 StaticHandover bluetooth,wifi >" % (sys.argv[0])
 	print "e.g. < %s push /org/neard/nfc0/device0 MIME wifi_wsc>" % (sys.argv[0])
 	print "e.g. < %s push /org/neard/nfc0/device0 MIME raw application/xml '<your><xml tags></your>' >" % (sys.argv[0])
+	print "e.g. < %s push /org/neard/nfc0/device0 WiFiAssociation >" % (sys.argv[0])
 
 	sys.exit(1)
 
@@ -116,6 +117,9 @@ if (sys.argv[1] == "push"):
 		     	if sys.argv[4] in ["wifi_wsc"]:
 				device.Push(({ "Type" : "MIME",
 					"MIME" : "application/vnd.wfa.wsc"}))
+		elif sys.argv[3] in ["WiFiAssociation"]:
+			device.Push(({ "Type" : "MIME",
+					"MIME" : "x/nfctl" }))
 		else:
 			usage()
 	else:

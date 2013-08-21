@@ -81,7 +81,7 @@ dist_man_MANS = doc/neard.8 doc/neard.conf.5 doc/nfctool.1
 test_scripts = test/test-adapter test/test-device \
 		test/test-tag test/monitor-near test/bt-handover \
 		test/handover-agent test/phdc-simple-manager \
-		test/neardutils.py
+		test/neardutils.py test/wifi-handover
 
 if TEST
 testdir = $(pkglibdir)/test
