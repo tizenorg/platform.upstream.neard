@@ -3273,6 +3273,119 @@ struct near_ndef_message *near_ndef_prepare_wsc_record(char *ssid,
 	return mime;
 }
 
+static char *get_mime_payload_data(DBusMessageIter iter,
+				char **payload, int *payload_len)
+{
+	DBG("");
+
+	if (!payload || !payload_len) {
+		near_error("Payload %p payload_len %p", payload, payload_len);
+		return NULL;
+	}
+
+	while (dbus_message_iter_get_arg_type(&iter) != DBUS_TYPE_INVALID) {
+		const char *key;
+		DBusMessageIter ent_iter;
+		DBusMessageIter var_iter;
+		DBusMessageIter arr_iter;
+
+		dbus_message_iter_recurse(&iter, &ent_iter);
+		dbus_message_iter_get_basic(&ent_iter, &key);
+		dbus_message_iter_next(&ent_iter);
+		dbus_message_iter_recurse(&ent_iter, &var_iter);
+
+		if (g_strcmp0(key, "Payload") == 0) {
+			if (dbus_message_iter_get_arg_type(&var_iter) ==
+							DBUS_TYPE_ARRAY &&
+			    dbus_message_iter_get_element_type(&var_iter) ==
+							DBUS_TYPE_BYTE) {
+					dbus_message_iter_recurse(&var_iter,
+								 &arr_iter);
+					dbus_message_iter_get_fixed_array(
+							&arr_iter, payload,
+							payload_len);
+			} else {
+				near_error("Unexpected payload type");
+				return NULL;
+			}
+		}
+		dbus_message_iter_next(&iter);
+	}
+
+	return *payload;
+}
+
+static struct near_ndef_message *near_ndef_prepare_mime_payload_record(
+				char *type, char *payload, int payload_len)
+{
+	struct near_ndef_message *mime;
+
+	DBG("Payload %*s", payload_len, payload);
+	mime = ndef_message_alloc_complete(type, payload_len, NULL, 0,
+						RECORD_TNF_MIME, TRUE, TRUE);
+	if (!mime) {
+		near_error("Failed to alloc NDEF message");
+		return NULL;
+	}
+
+	memcpy(mime->data + mime->offset, payload, payload_len);
+
+	return mime;
+}
+
+#define DE_AUTHENTICATION_TYPE 0x1003
+#define DE_NETWORK_KEY 0x1027
+#define DE_SSID 0x1045
+static void parse_wsc_oob(guint8 *oob_data, guint32 oob_length,
+					char **ssid, char **passphrase)
+{
+	guint32 offset = 0;
+	guint16 de_length, de_type;
+	guint16 auth_type;
+
+	while (offset < oob_length) {
+		de_type = near_get_be16(oob_data + offset);
+		de_length = near_get_be16(oob_data + offset + 2);
+
+		switch(de_type) {
+		case DE_AUTHENTICATION_TYPE:
+			auth_type = near_get_be16(oob_data + offset + 4);
+			DBG("WSC Authentication Type: 0x%02x",
+			    auth_type);
+			break;
+
+		case DE_SSID:
+			*ssid = g_try_malloc0(de_length + 1);
+			if (!*ssid)
+				break;
+
+			g_snprintf(*ssid, de_length + 1,
+					"%s", oob_data + offset + 4);
+
+			DBG("SSID: %s", *ssid);
+			break;
+
+		case DE_NETWORK_KEY:
+			*passphrase = g_try_malloc0(de_length + 1);
+			if (!*passphrase)
+				break;
+
+			g_snprintf(*passphrase, de_length + 1,
+					"%s", oob_data + offset + 4);
+
+			DBG("Passphrase: %s", *passphrase);
+			break;
+
+		default:
+			DBG("Unknown Data Element");
+			break;
+
+		}
+
+		offset += 4 + de_length;
+	}
+}
+
 static struct near_ndef_message *build_mime_record(DBusMessage *msg)
 {
 	DBusMessageIter iter, arr_iter;
@@ -3329,6 +3442,48 @@ static struct near_ndef_message *build_mime_record(DBusMessage *msg)
 				g_free(carrier);
 
 				return mime;
+			} else if (g_strcmp0(mime_str, "x/nfctl") == 0) {
+				struct carrier_data *carrier;
+				char *ssid = NULL, *passphrase = NULL;
+				char payload[128];
+
+				carrier = __near_agent_handover_request_data(
+							HO_AGENT_WIFI, NULL);
+				if (!carrier)
+					return NULL;
+
+				parse_wsc_oob(carrier->data, carrier->size,
+							&ssid, &passphrase);
+				if (!ssid || !passphrase)
+					return NULL;
+
+				g_snprintf(payload, 128,
+					"enZ:wifi association;C:I4:%s:2:%s",
+					ssid, passphrase);
+				g_free(ssid);
+				g_free(passphrase);
+
+				DBG("payload %s", payload);
+
+				return near_ndef_prepare_mime_payload_record(
+					mime_str, payload, strlen(payload));
+			} else {
+				/*
+				 * Expect data is set in the Payload field of
+				 * message.
+				 */
+				DBusMessageIter payload_iter;
+				char *payload;
+				int payload_len;
+
+				DBG("mime string %s", mime_str);
+				dbus_message_iter_recurse(&iter, &payload_iter);
+				if (!get_mime_payload_data(payload_iter,
+							&payload, &payload_len))
+					return NULL;
+
+				return near_ndef_prepare_mime_payload_record(
+					mime_str, payload, payload_len);
 			}
 
 		}
