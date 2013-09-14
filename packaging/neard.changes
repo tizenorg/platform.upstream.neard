@@ -1,3 +1,6 @@
+* Sat Sep 14 CST 2013 Chengyi Zhao <chengyi1.zhao@archermind.com> - 0.12
+- Fix issue TIVI-1665: [3.0] The neard service is not enabled by default
+
 * Mon Jul  8 17:02:59 CST 2013 Arron <arron.wang@intel.com> - 0.12
 - rebase to version 0.12
 
