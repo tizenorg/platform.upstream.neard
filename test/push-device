@@ -17,6 +17,8 @@ def help_text():
 	print "e.g. < %s /org/neard/nfc0/device0 Handover bluetooth,wifi >" % (sys.argv[0])
 	print "e.g. < %s /org/neard/nfc0/device0 StaticHandover bluetooth,wifi >" % (sys.argv[0])
 	print "e.g. < %s /org/neard/nfc0/device0 MIME wifi_wsc>" % (sys.argv[0])
+	print "e.g. < %s /org/neard/nfc0/device0 MIME raw application/xml '<your><xml tags></your>' >" % (sys.argv[0])
+	print "e.g. < %s /org/neard/nfc0/device0 WiFiAssociation >" % (sys.argv[0])
 	sys.exit(1)
 
 if len(sys.argv) < 2:
@@ -55,6 +57,13 @@ elif len(sys.argv) == 4:
 				"MIME" : "application/vnd.wfa.wsc"}))
 		else:
 			help_text()
+	else:
+		help_text()
+
+elif len(sys.argv) == 3:
+	if sys.argv[2] in ["WiFiAssociation"]:
+		device.Push(({ "Type" : "MIME",
+				"MIME" : "x/nfctl" }))
 	else:
 		help_text()
 else:
