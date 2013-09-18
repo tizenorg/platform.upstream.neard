@@ -68,6 +68,9 @@ install -d %{buildroot}%{_libdir}/systemd/system/multi-user.target.wants/
 ln -s ../neard.service %{buildroot}%{_libdir}/systemd/system/network.target.wants/neard.service
 ln -s ../neard.service %{buildroot}%{_libdir}/systemd/system/multi-user.target.wants/neard.service
 
+mkdir -p %{buildroot}%{_sysconfdir}/neard
+cp src/main.conf %{buildroot}%{_sysconfdir}/neard/main.conf
+
 %post
 systemctl daemon-reload
 systemctl restart neard.service
@@ -83,6 +86,7 @@ systemctl daemon-reload
 %license COPYING
 %{_mandir}/man*/*
 %{_libexecdir}/nfc/neard
+%config %{_sysconfdir}/neard/main.conf
 %config %{_sysconfdir}/dbus-1/system.d/org.neard.conf
 %{_libdir}/systemd/system/neard.service
 %{_libdir}/systemd/system/network.target.wants/neard.service
