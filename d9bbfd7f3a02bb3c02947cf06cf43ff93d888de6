@@ -1,0 +1,9 @@
+Code-Review+1: Geoffroy Van Cutsem <geoffroy.vancutsem@intel.com>
+Verified+1: Mikko Ylinen <mikko.ylinen@intel.com>
+Code-Review+2: MyungJoo Ham <myungjoo.ham@samsung.com>
+Code-Review+1: zhang zhengguang <zhengguang.zhang@intel.com>
+Submitted-by: MyungJoo Ham <myungjoo.ham@samsung.com>
+Submitted-at: Tue, 22 Oct 2013 18:53:53 -0700
+Reviewed-on: https://review.tizen.org/gerrit/10583
+Project: platform/upstream/neard
+Branch: refs/heads/tizen
