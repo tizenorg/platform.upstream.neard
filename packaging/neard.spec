@@ -10,8 +10,9 @@ Source1:    neard.service
 Source1001: neard.manifest
 BuildRequires:  pkgconfig(glib-2.0)
 BuildRequires:  pkgconfig(dbus-1)
-BuildRequires:  pkgconfig(libnl-2.0)
+BuildRequires:  pkgconfig(libnl-3.0)
 
+Requires:   libnl3
 Requires:   systemd
 Requires(post):   systemd
 Requires(preun):  systemd
