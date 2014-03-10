@@ -1,0 +1,91 @@
+#!/usr/bin/python
+
+#
+# This is just interim bt-handover script which enable handover while bluez uses
+# ObjectManager
+#
+
+import os
+import sys
+import gobject
+
+import dbus
+import dbus.mainloop.glib
+
+from dbus.lowlevel import MethodCallMessage, HANDLER_RESULT_NOT_YET_HANDLED
+
+mainloop = gobject.MainLoop()
+
+def property_changed_adapter(name, value, path):
+    if name in ["Devices"]:
+        if (len(value) == 0):
+            print "Lost device, exiting"
+            mainloop.quit()
+        else:
+            print "Tutaj"
+            device_path = value[0]
+
+            print "Pairing with %s" % (device_path)
+
+            device = dbus.Interface(bus.get_object("org.neard", device_path), "org.neard.Device")
+            device.Push(({ "Type" : "Handover", "Carrier" : "bluetooth"}))
+
+if __name__ == '__main__':
+	dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
+
+	bus = dbus.SystemBus()
+
+	manager = dbus.Interface(bus.get_object("org.bluez", "/"),
+				"org.freedesktop.DBus.ObjectManager")
+
+	objects = manager.GetManagedObjects()
+
+	all_adapters = (path for path, interfaces in objects.iteritems() if
+                        "org.bluez.Adapter1" in interfaces.keys()
+                        and path.endswith(bt_adapter))
+
+	bluez_adapter = None
+
+	for adapter in sorted(objects):
+		bluez_adapter = dbus.Interface(bus.get_object("org.bluez",
+							adapter),
+							"org.bluez.Adapter1")
+		break
+
+	if(bluez_adapter is None):
+		print("Bluetooth adapter %s could not be found" % bluez_adapter)
+		exit()
+
+	adapter_path = bluez_adapter.object_path
+	print("Using %s" % adapter_path)
+
+	adapter_props = dbus.Interface(bus.get_object("org.bluez",
+					adapter_path),
+					"org.freedesktop.DBus.Properties")
+
+	manager_neard = dbus.Interface(bus.get_object("org.neard", "/"),
+					"org.neard.Manager")
+
+	properties_neard = manager_neard.GetProperties()
+	neard_device_path = properties_neard["Adapters"][0]
+	adapter_neard = dbus.Interface(bus.get_object("org.neard", neard_device_path),
+					"org.neard.Adapter")
+
+        adapter_properties = adapter_neard.GetProperties()
+
+        for key in adapter_properties.keys():
+            if key in ["Polling"]:
+                if adapter_properties[key] == dbus.Boolean(1):
+                    print "Stoping poll on %s" % (neard_device_path)
+                    adapter_neard.StopPollLoop()
+
+        print "Starting poll on %s" % (neard_device_path)
+	adapter_neard.StartPollLoop("Initiator")
+
+	bus.add_signal_receiver(property_changed_adapter,
+				bus_name="org.neard",
+				dbus_interface="org.neard.Adapter",
+				signal_name = "PropertyChanged",
+				path_keyword="path")
+
+	mainloop.run()
