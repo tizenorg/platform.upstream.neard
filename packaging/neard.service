@@ -1,6 +1,7 @@
 [Unit]
 Description=NFC Manager Daemon
-Before=network.target
+Requires=nfc-manager-neard.service
+Before=network.target nfc-manager-neard.service
 
 [Service]
 Type=dbus
