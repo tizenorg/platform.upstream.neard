@@ -62,10 +62,10 @@ make %{?jobs:-j%jobs}
 %make_install
 
 # Systemd service file
-install -d %{buildroot}%{_libdir}/systemd/system/
-install -m 644 %{S:1} %{buildroot}%{_libdir}/systemd/system/neard.service
-install -d %{buildroot}%{_libdir}/systemd/system/network.target.wants/
-ln -s ../neard.service %{buildroot}%{_libdir}/systemd/system/network.target.wants/neard.service
+install -d %{buildroot}%{_unitdir}
+install -m 644 %{S:1} %{buildroot}%{_unitdir}/neard.service
+install -d %{buildroot}%{_unitdir}/network.target.wants/
+ln -s ../neard.service %{buildroot}%{_unitdir}/network.target.wants/neard.service
 
 
 mkdir -p %{buildroot}%{_sysconfdir}/neard
@@ -88,8 +88,8 @@ systemctl daemon-reload
 %{_libexecdir}/nfc/neard
 %config %{_sysconfdir}/neard/main.conf
 %config %{_sysconfdir}/dbus-1/system.d/org.neard.conf
-%{_libdir}/systemd/system/neard.service
-%{_libdir}/systemd/system/network.target.wants/neard.service
+%{_unitdir}/neard.service
+%{_unitdir}/network.target.wants/neard.service
 
 %files devel
 %manifest %{name}.manifest
