@@ -6,10 +6,10 @@ import neardutils
 
 bus = dbus.SystemBus()
 
-def extract_list(list):
+def extract_ndef(list):
 	val = "["
 	for i in list:
-		val += " " + str(i)
+		val += " 0x%x" % i
 	val += " ]"
 	return val
 
@@ -72,6 +72,10 @@ if (sys.argv[1] == "dump"):
 		sys.exit(0)
 	else:
 		neardutils.dump_all_records(sys.argv[2])
+
+		device = neardutils.find_device(sys.argv[2])
+		raw_ndef = device.DumpRawNDEF()
+		print "        Raw NDEF = %s" % (extract_ndef(raw_ndef))
 
 		sys.exit(0)
 
